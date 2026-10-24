@@ -44,9 +44,9 @@ function load() {
   }
 }
 
-// Every way state gets replaced (load, cloud, backup file) goes through here.
-function setState(data) {
-  state = Object.assign(blankState(), data);
+// Brings saved data from any older version up to today's shape.
+function normalize(data) {
+  const state = Object.assign(blankState(), JSON.parse(JSON.stringify(data || {})));
   // Older versions treated a Training left swipe as "not interested". It now means "haven't seen it".
   if (!state.unseenMigrated && state.rejected) {
     state.unseen = state.unseen || {};
@@ -63,6 +63,13 @@ function setState(data) {
   for (const f of PROFILE_FIELDS) delete state[f];
   for (const p of Object.values(state.profiles)) for (const [f, v] of Object.entries(blankProfile())) if (!(f in p)) p[f] = v;
   if (!state.profiles[state.activeProfile]) state.activeProfile = Object.keys(state.profiles)[0];
+  state.night = (state.night || []).filter((id) => state.profiles[id]);
+  return state;
+}
+
+// Every way state gets replaced (load, cloud, backup file) goes through here.
+function setState(data) {
+  state = normalize(data);
   // state.ratings etc. always mean the active person's data. Not saved twice: these aren't enumerable.
   for (const f of PROFILE_FIELDS) {
     Object.defineProperty(state, f, {
@@ -72,10 +79,56 @@ function setState(data) {
       configurable: true,
     });
   }
-  state.night = (state.night || []).filter((id) => state.profiles[id]);
   resetProfile();
 }
 const me = () => state.profiles[state.activeProfile];
+
+// Merges another phone's copy (from the cloud) into this one, so no one's ratings get lost.
+// People are matched by name. For each title, the newest action wins.
+function mergeIn(remoteData) {
+  const r = normalize(remoteData);
+  const remoteNewer = (r.updatedAt || 0) > (state.updatedAt || 0);
+  if (remoteNewer) {
+    for (const f of ['mode', 'services', 'servicesPicked', 'nightType', 'night']) if (r[f] !== undefined) state[f] = r[f];
+  }
+  if (!state.apiKey) state.apiKey = r.apiKey;
+  state.names = Object.assign({}, r.names, state.names);
+  const byName = (name) => Object.keys(state.profiles).find((id) => state.profiles[id].name.trim().toLowerCase() === name.trim().toLowerCase());
+  for (const [rid, rp] of Object.entries(r.profiles)) {
+    let lid = byName(rp.name);
+    if (!lid) {
+      // Same id but a different name means two phones each made their own first profile.
+      const id = state.profiles[rid] ? rid + '-' + Math.random().toString(36).slice(2, 6) : rid;
+      state.profiles[id] = rp;
+      continue;
+    }
+    const lp = state.profiles[lid];
+    for (const f of ['ratings', 'rejected', 'pinned']) {
+      for (const [k, v] of Object.entries(rp[f])) if (!(k in lp[f]) || (v.at || 0) > (lp[f][k].at || 0)) lp[f][k] = v;
+    }
+    for (const [k, v] of Object.entries(rp.unseen)) if (!(k in lp.unseen) || v > lp.unseen[k]) lp.unseen[k] = v;
+    // A rated title isn't also pinned or "not seen"; between rated and removed, the newer one stays.
+    for (const k of Object.keys(lp.ratings)) {
+      delete lp.pinned[k];
+      delete lp.unseen[k];
+      if (lp.rejected[k]) {
+        if ((lp.rejected[k].at || 0) > (lp.ratings[k].at || 0)) delete lp.ratings[k];
+        else delete lp.rejected[k];
+      }
+    }
+    const a = lp.train, b = rp.train;
+    if (b.phase > a.phase || (b.phase === a.phase && b.page > a.page)) lp.train = b;
+    if (remoteNewer) lp.emoji = rp.emoji;
+    // A PIN set on either phone is kept, so a copy without one can't wipe it out.
+    if (rp.pinHash && (remoteNewer || !lp.pinHash)) lp.pinHash = rp.pinHash;
+  }
+  state.night = (state.night || []).filter((id) => state.profiles[id]);
+  if (!state.profiles[state.activeProfile]) state.activeProfile = Object.keys(state.profiles)[0];
+  state.updatedAt = Math.max(state.updatedAt || 0, r.updatedAt || 0);
+  resetProfile();
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {}
+  return state;
+}
 function save() {
   state.updatedAt = Date.now();
   try {
@@ -1116,6 +1169,7 @@ function toast(msg) {
 // ---------- Login and online saving ----------
 
 const SYNC_TEXT = { saving: 'Saving…', saved: '✓ Saved', offline: 'Offline, will save when back online.', loggedout: 'Logged out, log in again to save.' };
+Cloud.mergeHook = mergeIn;
 Cloud.onStatus = (s) => {
   $('#sync-status').textContent = SYNC_TEXT[s] || '';
   if (s === 'loggedout') showLogin();
@@ -1129,14 +1183,11 @@ function showLogin() {
 async function syncDown() {
   try {
     const row = await Cloud.pull();
-    if (row && row.data && (row.data.updatedAt || 0) >= (state.updatedAt || 0)) {
-      setState(row.data);
-      try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {}
-      resetProfile();
+    if (row && row.data) {
+      mergeIn(row.data);
       resetDecks();
-    } else if (state.updatedAt || Object.keys(state.ratings).length) {
-      await Cloud.push(state);
     }
+    await Cloud.push(state);
     $('#sync-status').textContent = SYNC_TEXT.saved;
   } catch (e) {
     if (!Cloud.loggedIn) return showLogin();

@@ -1,5 +1,5 @@
 // Keeps the app itself working offline. Movie data always comes fresh from TMDB.
-const CACHE = 'wtw-v10';
+const CACHE = 'wtw-v11';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'cloud.js', 'stats.js', 'family.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

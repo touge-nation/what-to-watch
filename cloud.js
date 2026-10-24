@@ -9,8 +9,10 @@ const Cloud = (() => {
   const SESSION_KEY = 'wtw-session-v1';
   let session = readSession();
   let pending = null;
+  let queued = 0;
   let timer = null;
   let onStatus = () => {};
+  let mergeHook = null;
 
   function readSession() {
     try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return null; }
@@ -94,6 +96,7 @@ const Cloud = (() => {
   function queue(data) {
     if (!enabled || !session) return;
     pending = data;
+    queued++;
     clearTimeout(timer);
     onStatus('saving');
     timer = setTimeout(flush, 1200);
@@ -102,10 +105,14 @@ const Cloud = (() => {
   async function flush() {
     clearTimeout(timer);
     if (!pending || !session) return;
-    const data = pending;
+    const n = queued;
     try {
+      // Another phone may have saved since; fold its changes in before saving ours.
+      let data = pending;
+      const row = await pull();
+      if (row && row.data && mergeHook) data = mergeHook(row.data);
       await push(data);
-      if (pending === data) pending = null;
+      if (queued === n) pending = null;
       onStatus('saved');
     } catch (e) {
       onStatus(e.status === 401 || !session ? 'loggedout' : 'offline');
@@ -120,6 +127,7 @@ const Cloud = (() => {
     get loggedIn() { return !!session; },
     get email() { return session && session.email; },
     set onStatus(fn) { onStatus = fn; },
+    set mergeHook(fn) { mergeHook = fn; },
     logIn, signUp, logOut, pull, push, queue, flush,
   };
 })();
