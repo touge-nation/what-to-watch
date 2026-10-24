@@ -46,9 +46,14 @@
     </section>
 
     <section id="view-settings" class="view" hidden>
+      <div class="card-box" id="account-box" hidden>
+        <h2>Account</h2>
+        <p class="small">Logged in as <b id="account-email"></b>. Your ratings save online automatically. <span id="sync-status"></span></p>
+        <button id="logout" class="btn ghost">Log out</button>
+      </div>
       <div class="card-box">
         <h2>TMDB key</h2>
-        <p class="small">Free. Make an account at <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a>, then go to <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">Settings → API</a> and copy the <b>API Read Access Token</b> (or the API Key). It stays on this phone.</p>
+        <p class="small">Free. Make an account at <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a>, then go to <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">Settings → API</a> and copy the <b>API Read Access Token</b> (or the API Key). Saved only to your private account.</p>
         <input id="api-key" type="password" placeholder="Paste key here" autocomplete="off">
         <button id="save-key" class="btn">Save key</button>
         <p id="key-status" class="small"></p>
@@ -59,7 +64,7 @@
       </div>
       <div class="card-box">
         <h2>Backup</h2>
-        <p class="small">Your ratings live only on this phone. Save a backup now and then.</p>
+        <p class="small">Extra safety: save a copy of your ratings as a file.</p>
         <button id="export" class="btn">Save backup file</button>
         <label class="btn ghost">Load backup file<input id="import" type="file" accept="application/json" hidden></label>
       </div>
@@ -89,8 +94,23 @@
     </div>
   </div>
 
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="card-box">
+      <div class="login-logo">🎬</div>
+      <h2>What to Watch</h2>
+      <p class="small">Log in so your ratings are saved online and never lost.</p>
+      <input id="login-email" type="email" placeholder="Email" autocomplete="email" required>
+      <input id="login-pass" type="password" placeholder="Password (6+ characters)" autocomplete="current-password" minlength="6" required>
+      <button class="btn" type="submit" data-how="in">Log in</button>
+      <button class="btn ghost" type="submit" data-how="up">Create account</button>
+      <p id="login-msg" class="small"></p>
+    </form>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
+  <script src="config.js"></script>
+  <script src="cloud.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

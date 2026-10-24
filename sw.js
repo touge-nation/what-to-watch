@@ -1,6 +1,6 @@
 // Keeps the app itself working offline. Movie data always comes fresh from TMDB.
-const CACHE = 'wtw-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'wtw-v2';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'cloud.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

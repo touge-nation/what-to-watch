@@ -17,6 +17,7 @@ const blankState = () => ({
   pinned: {},            // key -> {id, type, title, year, poster, features, at}
   names: {},             // feature -> readable name, for "because you like..."
   train: { phase: 0, page: 1, done: false },
+  updatedAt: 0,
 });
 
 let state = load();
@@ -30,11 +31,13 @@ function load() {
   }
 }
 function save() {
+  state.updatedAt = Date.now();
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch {
-    toast('Could not save. Phone storage may be full.');
+    toast('Could not save on this phone.');
   }
+  Cloud.queue(state);
 }
 
 const keyOf = (type, id) => `${type}:${id}`;
@@ -724,7 +727,7 @@ function render() {
   if (deckTab) renderDeck();
   if (currentTab === 'pinned') renderPinned();
   if (currentTab === 'ratings') renderRatings();
-  if (currentTab === 'settings') renderSettings();
+  if (currentTab === 'settings') renderSettings(), renderAccount();
 }
 
 document.querySelectorAll('.tabs button').forEach((b) =>
@@ -745,8 +748,99 @@ function toast(msg) {
   toastTimer = setTimeout(() => (t.hidden = true), 2200);
 }
 
-if (!state.apiKey) currentTab = 'settings', document.querySelector('.tabs button[data-tab="settings"]').click();
-renderToggle();
-render();
+// ---------- Login and online saving ----------
+
+const SYNC_TEXT = { saving: 'Saving…', saved: '✓ Saved', offline: 'Offline, will save when back online.', loggedout: 'Logged out, log in again to save.' };
+Cloud.onStatus = (s) => {
+  $('#sync-status').textContent = SYNC_TEXT[s] || '';
+  if (s === 'loggedout') showLogin();
+};
+
+function showLogin() {
+  $('#login').hidden = false;
+}
+
+// After login, the newer copy wins: the one online or the one on this phone.
+async function syncDown() {
+  try {
+    const row = await Cloud.pull();
+    if (row && row.data && (row.data.updatedAt || 0) >= (state.updatedAt || 0)) {
+      state = Object.assign(blankState(), row.data);
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {}
+      resetProfile();
+      resetDecks();
+    } else if (state.updatedAt || Object.keys(state.ratings).length) {
+      await Cloud.push(state);
+    }
+    $('#sync-status').textContent = SYNC_TEXT.saved;
+  } catch (e) {
+    if (!Cloud.loggedIn) return showLogin();
+    toast('Couldn\u2019t reach your saved ratings. Using this phone\u2019s copy.');
+  }
+}
+
+let loginHow = 'in';
+document.querySelectorAll('#login-form button').forEach((b) => b.addEventListener('click', () => (loginHow = b.dataset.how)));
+$('#login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('#login-email').value.trim();
+  const pass = $('#login-pass').value;
+  const msg = $('#login-msg');
+  msg.textContent = loginHow === 'up' ? 'Creating account…' : 'Logging in…';
+  try {
+    if (loginHow === 'up') {
+      if ((await Cloud.signUp(email, pass)) === 'confirm') {
+        msg.textContent = 'Check your email and tap the confirm link. Then come back and tap Log in.';
+        return;
+      }
+    } else {
+      await Cloud.logIn(email, pass);
+    }
+    msg.textContent = '';
+    $('#login').hidden = true;
+    await syncDown();
+    start();
+  } catch (err) {
+    msg.textContent = /invalid login/i.test(err.message) ? 'Wrong email or password.'
+      : /not confirmed/i.test(err.message) ? 'Confirm your email first (check your inbox).'
+      : /registered|exists/i.test(err.message) ? 'That email already has an account. Tap Log in.'
+      : 'Couldn\u2019t log in: ' + err.message;
+  }
+});
+
+$('#logout').addEventListener('click', async () => {
+  await Cloud.flush();
+  Cloud.logOut();
+  // Clear this phone's copy. Everything is still saved online.
+  localStorage.removeItem(STORE_KEY);
+  state = blankState();
+  resetProfile();
+  resetDecks();
+  showLogin();
+});
+
+function renderAccount() {
+  $('#account-box').hidden = !Cloud.loggedIn;
+  $('#account-email').textContent = Cloud.email || '';
+}
+
+let started = false;
+function start() {
+  renderAccount();
+  renderToggle();
+  if (!started && !state.apiKey) {
+    document.querySelector('.tabs button[data-tab="settings"]').click();
+  } else {
+    render();
+  }
+  started = true;
+}
+
+if (Cloud.enabled && !Cloud.loggedIn) {
+  showLogin();
+} else {
+  start();
+  if (Cloud.enabled) syncDown().then(() => render());
+}
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
