@@ -89,7 +89,7 @@ function mergeIn(remoteData) {
   const r = normalize(remoteData);
   const remoteNewer = (r.updatedAt || 0) > (state.updatedAt || 0);
   if (remoteNewer) {
-    for (const f of ['mode', 'services', 'servicesPicked', 'nightType', 'night']) if (r[f] !== undefined) state[f] = r[f];
+    for (const f of ['mode', 'services', 'servicesPicked', 'nightType', 'suggestType', 'night']) if (r[f] !== undefined) state[f] = r[f];
   }
   if (!state.apiKey) state.apiKey = r.apiKey;
   state.names = Object.assign({}, r.names, state.names);
@@ -365,19 +365,31 @@ async function moreTraining() {
 
 // Suggestions: things similar to what you rated high, plus your best genres. Only unseen titles, best match first.
 let suggestRound = 0;
+// Movie and TV genres have different ids and some different names, so match by name.
+const GENRE_ALIAS = {
+  tv: { Action: 'Action & Adventure', Adventure: 'Action & Adventure', 'Science Fiction': 'Sci-Fi & Fantasy', Fantasy: 'Sci-Fi & Fantasy', War: 'War & Politics' },
+  movie: { 'Action & Adventure': 'Action', 'Sci-Fi & Fantasy': 'Science Fiction', 'War & Politics': 'War' },
+};
+
 async function moreSuggestions() {
-  const liked = Object.values(state.ratings).filter((r) => r.score >= 70).sort((a, b) => b.score - a.score);
+  // For You shows movies and shows as two separate lists.
+  const type = state.suggestType || 'movie';
+  const liked = Object.values(state.ratings).filter((r) => r.score >= 70 && r.type === type).sort((a, b) => b.score - a.score);
   const page = suggestRound + 1;
   const jobs = [];
   for (const r of liked.slice(0, 20)) {
     jobs.push(tmdb(`/${r.type}/${r.id}/recommendations`, { page }).then((x) => x.results.map((it) => fromListItem(it, r.type))));
   }
   const { w } = profile();
-  const topGenres = Object.keys(w).filter((f) => f[0] === 'g' && w[f] > 0).sort((a, b) => w[b] - w[a]).slice(0, 3).map((f) => f.slice(1));
-  for (const type of ['movie', 'tv']) {
+  // Your favorite genres, even if you liked them in the other list (loved action movies -> action shows).
+  const genres = (await allGenres())[type];
+  const topGenres = [...new Set(Object.keys(w).filter((f) => f[0] === 'g' && w[f] > 0).sort((a, b) => w[b] - w[a])
+    .map((f) => { const n = state.names[f]; const g = genres.find((x) => x.name === (GENRE_ALIAS[type][n] || n)); return g && g.id; })
+    .filter(Boolean))].slice(0, 3);
+  for (const sort_by of ['vote_average.desc', 'popularity.desc']) {
     jobs.push(tmdb(`/discover/${type}`, Object.assign({
-      sort_by: 'vote_average.desc',
-      'vote_count.gte': 300,
+      sort_by,
+      'vote_count.gte': type === 'tv' ? 150 : 300,
       with_genres: topGenres.join('|'),
       page,
     }, serviceFilter())).then((x) => x.results.map((it) => fromListItem(it, type))));
@@ -660,6 +672,7 @@ const openRows = new Set();
 
 function renderSuggestList() {
   const d = decks.suggest;
+  document.querySelectorAll('#suggest-type button').forEach((b) => b.classList.toggle('on', b.dataset.type === (state.suggestType || 'movie')));
   const msg = (html) => (sugEl.innerHTML = `<li class="sub empty-row">${html}</li>`);
   if (!state.apiKey) return msg('Add your free TMDB key in <b>Settings</b> to start.');
   if (Object.keys(state.ratings).length < 3) return msg('Rate at least 3 things in <b>Training</b> first, so I can learn your taste.');
@@ -1114,6 +1127,18 @@ $('#import').addEventListener('change', async (e) => {
 });
 
 // ---------- Mode toggle, tabs, misc ----------
+
+document.querySelectorAll('#suggest-type button').forEach((b) =>
+  b.addEventListener('click', () => {
+    if ((state.suggestType || 'movie') === b.dataset.type) return;
+    state.suggestType = b.dataset.type;
+    save();
+    decks.suggest = { queue: [], loading: false, empty: false };
+    suggestRound = 0;
+    sugEl.scrollTop = 0;
+    $('#view-suggest').scrollTop = 0;
+    render();
+  }));
 
 function renderToggle() {
   document.querySelectorAll('#mode-toggle button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode));
