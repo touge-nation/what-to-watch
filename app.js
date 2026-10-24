@@ -7,39 +7,75 @@ const REGION = 'US';
 const TRAIN_MOVIE_PAGES = 15; // ~300 top movies from the last 10 years before switching to current stuff
 const DEFAULT_SERVICES = /^(netflix|amazon prime video|disney plus|paramount plus|paramount\+|apple tv\+?|apple tv plus)$/i;
 
+// Shared by the whole family: TMDB key, streaming services, filters.
 const blankState = () => ({
   apiKey: '',
   mode: 'mine',          // For You filter: 'mine' = on my services, 'other' = not on my services, 'all' = everything
   services: [],          // TMDB provider ids
   servicesPicked: false,
+  names: {},             // feature -> readable name, for "because you like..."
+  profiles: {},          // id -> one family member, see blankProfile
+  activeProfile: '',
+  night: [],             // profile ids picked for movie night
+  updatedAt: 0,
+});
+
+// Each family member's own taste.
+const PROFILE_FIELDS = ['ratings', 'rejected', 'unseen', 'pinned', 'train'];
+const blankProfile = (name, emoji) => ({
+  name,
+  emoji,
   ratings: {},           // key -> {id, type, title, year, poster, score, features, at}
   rejected: {},          // key -> {features, at}: removed from For You, counts as a small "not for me"
   unseen: {},            // key -> at: swiped left in Training, "haven't seen it", no effect on taste
   pinned: {},            // key -> {id, type, title, year, poster, features, at}
-  names: {},             // feature -> readable name, for "because you like..."
   train: { phase: 0, page: 1, done: false },
-  updatedAt: 0,
 });
 
-let state = load();
-
-// Older versions treated a Training left swipe as "not interested". It now means "haven't seen it".
-function migrate() {
-  if (state.unseenMigrated) return;
-  for (const k in state.rejected) state.unseen[k] = state.rejected[k].at || Date.now();
-  state.rejected = {};
-  state.unseenMigrated = true;
-}
-migrate();
+let state;
+const profileCache = new Map(); // profile id -> taste weights, cleared whenever ratings change
+setState(load());
 
 function load() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
-    return Object.assign(blankState(), saved || {});
+    return JSON.parse(localStorage.getItem(STORE_KEY)) || {};
   } catch {
-    return blankState();
+    return {};
   }
 }
+
+// Every way state gets replaced (load, cloud, backup file) goes through here.
+function setState(data) {
+  state = Object.assign(blankState(), data);
+  // Older versions treated a Training left swipe as "not interested". It now means "haven't seen it".
+  if (!state.unseenMigrated && state.rejected) {
+    state.unseen = state.unseen || {};
+    for (const k in state.rejected) state.unseen[k] = state.rejected[k].at || Date.now();
+    state.rejected = {};
+  }
+  state.unseenMigrated = true;
+  // Before profiles, one person's data sat at the top level. It becomes the first profile.
+  if (!Object.keys(state.profiles).length) {
+    const p = blankProfile('Me', '😎');
+    for (const f of PROFILE_FIELDS) if (state[f]) p[f] = state[f];
+    state.profiles = { p1: p };
+  }
+  for (const f of PROFILE_FIELDS) delete state[f];
+  for (const p of Object.values(state.profiles)) for (const [f, v] of Object.entries(blankProfile())) if (!(f in p)) p[f] = v;
+  if (!state.profiles[state.activeProfile]) state.activeProfile = Object.keys(state.profiles)[0];
+  // state.ratings etc. always mean the active person's data. Not saved twice: these aren't enumerable.
+  for (const f of PROFILE_FIELDS) {
+    Object.defineProperty(state, f, {
+      get: () => state.profiles[state.activeProfile][f],
+      set: (v) => (state.profiles[state.activeProfile][f] = v),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  state.night = (state.night || []).filter((id) => state.profiles[id]);
+  resetProfile();
+}
+const me = () => state.profiles[state.activeProfile];
 function save() {
   state.updatedAt = Date.now();
   try {
@@ -165,9 +201,10 @@ function featuresOf(d, type) {
   return f;
 }
 
-let profileCache = null;
-function profile() {
-  if (profileCache) return profileCache;
+// Taste weights for one family member (the active one by default).
+function profile(id = state.activeProfile) {
+  if (profileCache.has(id)) return profileCache.get(id);
+  const person = state.profiles[id];
   const sum = {};
   const cnt = {};
   const add = (features, w) => {
@@ -176,20 +213,21 @@ function profile() {
       cnt[f] = (cnt[f] || 0) + 1;
     }
   };
-  for (const r of Object.values(state.ratings)) add(r.features, (r.score - 50) / 50);
-  for (const r of Object.values(state.rejected)) add(r.features, -0.25);
-  for (const r of Object.values(state.pinned)) add(r.features, 0.25);
+  for (const r of Object.values(person.ratings)) add(r.features, (r.score - 50) / 50);
+  for (const r of Object.values(person.rejected)) add(r.features, -0.25);
+  for (const r of Object.values(person.pinned)) add(r.features, 0.25);
   const w = {};
   // The +1 keeps one lucky rating from dominating a tag.
   for (const f in sum) w[f] = sum[f] / (cnt[f] + 1);
-  profileCache = { w, n: Object.keys(state.ratings).length };
-  return profileCache;
+  const out = { w, n: Object.keys(person.ratings).length };
+  profileCache.set(id, out);
+  return out;
 }
-const resetProfile = () => { profileCache = null; };
+function resetProfile() { profileCache.clear(); }
 
 // Predicted 0-100 score. With few ratings it leans on TMDB's crowd score; it trusts your taste more as you rate.
-function predict(t) {
-  const { w, n } = profile();
+function predict(t, id) {
+  const { w, n } = profile(id);
   const byTag = {};
   for (const f of t.features || []) (byTag[f[0]] ||= []).push(w[f] || 0);
   let raw = 0;
@@ -578,7 +616,7 @@ function renderSuggestList() {
   if (d.queue.length < SUGGEST_COUNT) fillDeck('suggest');
 }
 
-function sugRow(t, rank) {
+function sugRow(t, rank, opts = {}) {
   const k = keyOf(t.type, t.id);
   const open = openRows.has(k);
   const img = t.poster ? `<img src="${IMG}w154${t.poster}" alt="" loading="lazy">` : '<div class="ph"></div>';
@@ -601,8 +639,8 @@ function sugRow(t, rank) {
         <div class="score">${t.score}</div>
       </div>
       <div class="srow-more">
-        <div class="pred">You'll like it: <b>${t.score}</b> / 100${t.vote ? ` <span class="sub">· TMDB ${Math.round(t.vote * 10)}</span>` : ''}</div>
-        ${whyText ? `<div class="sub">${esc(whyText)}</div>` : ''}
+        <div class="pred">${opts.predLabel || 'You\'ll like it'}: <b>${t.score}</b> / 100${t.vote ? ` <span class="sub">· TMDB ${Math.round(t.vote * 10)}</span>` : ''}</div>
+        ${opts.extra || (whyText ? `<div class="sub">${esc(whyText)}</div>` : '')}
         ${t.genres && t.genres.length ? `<div class="sub">${esc(t.genres.join(', '))}</div>` : ''}
         <p>${esc(t.overview) || 'No description yet.'}</p>
         ${t.cast && t.cast.length ? `<div class="sub"><b>Starring:</b> ${esc(t.cast.join(', '))}</div>` : ''}
@@ -610,11 +648,11 @@ function sugRow(t, rank) {
         <div class="where">${where.length
           ? mine.map((w) => `<span class="mine">✓ ${esc(w.name)}</span>`).join('') + rest.map((w) => `<span>${esc(w.name)}</span>`).join('')
           : '<span>Not streaming in the US right now</span>'}</div>
-        <div class="row-actions">
+        ${opts.noActions ? '' : `<div class="row-actions">
           <button class="mini" data-do="right">✓ Seen it</button>
           <button class="mini" data-do="up">📌 Pin</button>
           <button class="mini" data-do="left">✕ Remove</button>
-        </div>
+        </div>`}
       </div>
     </div>
   </li>`;
@@ -1006,7 +1044,7 @@ $('#import').addEventListener('change', async (e) => {
   try {
     const data = JSON.parse(await file.text());
     if (!data.ratings) throw new Error('not a backup');
-    state = Object.assign(blankState(), data, { apiKey: state.apiKey });
+    setState(Object.assign({}, data, { apiKey: state.apiKey }));
     save();
     resetProfile();
     resetDecks();
@@ -1032,7 +1070,7 @@ document.querySelectorAll('#mode-toggle button').forEach((b) =>
     render();
   }));
 
-const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', ratings: 'My Ratings', profile: 'Profile', settings: 'Settings' };
+const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', ratings: 'My Ratings', profile: 'Profile', settings: 'Settings', night: 'Movie Night' };
 
 function render() {
   $('#title').textContent = TITLES[currentTab];
@@ -1044,12 +1082,15 @@ function render() {
   $('#view-ratings').hidden = currentTab !== 'ratings';
   $('#view-settings').hidden = currentTab !== 'settings';
   $('#view-profile').hidden = currentTab !== 'profile';
+  $('#view-night').hidden = currentTab !== 'night';
+  renderWho();
   $('#open-settings').hidden = currentTab !== 'profile';
   if (deckTab) renderDeck();
   if (currentTab === 'pinned') renderPinned();
   if (currentTab === 'ratings') renderRatings();
   if (currentTab === 'settings') renderSettings(), renderAccount();
   if (currentTab === 'profile') renderProfile();
+  if (currentTab === 'night') renderNight();
 }
 
 // Settings has no tab of its own; it opens from Profile.
@@ -1089,8 +1130,7 @@ async function syncDown() {
   try {
     const row = await Cloud.pull();
     if (row && row.data && (row.data.updatedAt || 0) >= (state.updatedAt || 0)) {
-      state = Object.assign(blankState(), row.data);
-      migrate();
+      setState(row.data);
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {}
       resetProfile();
       resetDecks();
@@ -1138,7 +1178,7 @@ $('#logout').addEventListener('click', async () => {
   Cloud.logOut();
   // Clear this phone's copy. Everything is still saved online.
   localStorage.removeItem(STORE_KEY);
-  state = blankState();
+  setState({});
   resetProfile();
   resetDecks();
   showLogin();
@@ -1158,14 +1198,18 @@ function start() {
   } else {
     render();
   }
+  if (!started) askWhoOnStart();
   started = true;
 }
 
-if (Cloud.enabled && !Cloud.loggedIn) {
-  showLogin();
-} else {
-  start();
-  if (Cloud.enabled) syncDown().then(() => render());
-}
+// Runs after every script (stats.js, family.js) has loaded.
+document.addEventListener('DOMContentLoaded', () => {
+  if (Cloud.enabled && !Cloud.loggedIn) {
+    showLogin();
+  } else {
+    start();
+    if (Cloud.enabled) syncDown().then(() => render());
+  }
+});
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
