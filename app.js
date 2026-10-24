@@ -9,7 +9,7 @@ const DEFAULT_SERVICES = /^(netflix|amazon prime video|disney plus|paramount plu
 
 const blankState = () => ({
   apiKey: '',
-  mode: 'mine',          // 'mine' = only my services, 'all' = everything incl. rent/buy
+  mode: 'mine',          // For You filter: 'mine' = on my services, 'other' = not on my services, 'all' = everything
   services: [],          // TMDB provider ids
   servicesPicked: false,
   ratings: {},           // key -> {id, type, title, year, poster, score, features, at}
@@ -243,12 +243,13 @@ async function moreTraining() {
       'primary_release_date.gte': tenYearsAgo(),
       include_adult: false,
       page: tr.page,
-    }, serviceFilter()));
+    }));
     out.push(...r.results.map((it) => fromListItem(it, 'movie')));
     tr.page++;
     if (tr.page > Math.min(TRAIN_MOVIE_PAGES, r.total_pages || 1)) { tr.phase = 1; tr.page = 1; }
   } else {
-    const filter = serviceFilter();
+    // Training covers everything, whatever services you have.
+    const filter = {};
     const [m, s] = await Promise.all([
       tmdb('/discover/movie', Object.assign({ sort_by: 'popularity.desc', 'vote_count.gte': 50, page: tr.page }, filter)),
       tmdb('/discover/tv', Object.assign({ sort_by: 'popularity.desc', 'vote_count.gte': 50, page: tr.page }, filter)),
@@ -272,7 +273,7 @@ async function moreSuggestions() {
   const liked = Object.values(state.ratings).filter((r) => r.score >= 70).sort((a, b) => b.score - a.score);
   const page = suggestRound + 1;
   const jobs = [];
-  for (const r of liked.slice(0, 10)) {
+  for (const r of liked.slice(0, 20)) {
     jobs.push(tmdb(`/${r.type}/${r.id}/recommendations`, { page }).then((x) => x.results.map((it) => fromListItem(it, r.type))));
   }
   const { w } = profile();
@@ -298,9 +299,9 @@ async function moreSuggestions() {
       pool.push(t);
     }
   }
-  const full = await mapLimit(pool, 6, (t) => details(t).catch(() => null));
+  const full = await mapLimit(pool, 8, (t) => details(t).catch(() => null));
   return full
-    .filter((t) => t && (state.mode === 'all' || !state.services.length || onMyServices(t)))
+    .filter((t) => t && (state.mode === 'all' || !state.services.length || (state.mode === 'mine') === onMyServices(t)))
     .map((t) => Object.assign(t, { score: predict(t) }))
     .sort((a, b) => b.score - a.score);
 }
@@ -317,22 +318,27 @@ async function mapLimit(items, n, fn) {
   return out;
 }
 
-const SUGGEST_COUNT = 25;
+const SUGGEST_COUNT = 100;
+const SUGGEST_ROUNDS = 8;
 
 async function fillDeck(name) {
   const d = decks[name];
   const want = name === 'suggest' ? SUGGEST_COUNT : 5;
-  if (d.loading || d.queue.length >= want || d.empty) return;
+  if (d.loading || d.queue.length >= want || d.empty || d.exhausted) return;
   d.loading = true;
   try {
-    for (let tries = 0; tries < 6 && d.queue.length < want; tries++) {
+    for (let tries = 0; tries < (name === 'suggest' ? SUGGEST_ROUNDS : 6) && d.queue.length < want; tries++) {
       if (name === 'train' && state.train.done) break;
       const more = name === 'train' ? await moreTraining() : await moreSuggestions();
       const inQueue = new Set(d.queue.map((t) => keyOf(t.type, t.id)));
       const done = name === 'train' ? handledTrain : handled;
       d.queue.push(...more.filter((t) => !done(keyOf(t.type, t.id)) && !inQueue.has(keyOf(t.type, t.id))));
-      if (name === 'suggest') d.queue.sort((a, b) => b.score - a.score);
-      if (name === 'suggest' && (suggestRound > 5 || !more.length)) break;
+      if (name === 'suggest') {
+        d.queue.sort((a, b) => b.score - a.score);
+        // Show the list as it grows instead of waiting for all 100.
+        if (currentTab === 'suggest') renderSuggestList();
+        if (suggestRound >= SUGGEST_ROUNDS) { d.exhausted = true; break; }
+      }
     }
     if (!d.queue.length) d.empty = true;
   } catch (e) {
@@ -371,7 +377,7 @@ function renderDeck() {
     return emptyMsg('Rate at least 3 things in <b>Training</b> first, so I can learn your taste.');
   }
   if (!d.queue.length) {
-    if (d.empty) return emptyMsg(currentTab === 'train' ? 'You went through everything! Try <b>Everything</b> mode, or search in Ratings.' : 'No more matches right now. Rate more in Training, or try <b>Everything</b> mode.');
+    if (d.empty) return emptyMsg(currentTab === 'train' ? 'You went through everything! Try search in Ratings.' : 'No more matches right now. Rate more in Training, or switch to <b>All</b>.');
     emptyMsg('Loading…');
     fillDeck(currentTab);
     return;
@@ -551,7 +557,7 @@ document.querySelectorAll('.deck-buttons button').forEach((b) =>
   }));
 
 // ---------- For You list ----------
-// Top 25 unseen picks. Tap to expand. Swipe right = seen it, swipe left = remove.
+// Top 100 unseen picks. Tap to expand. Swipe right = seen it, swipe left = remove.
 
 const sugEl = $('#suggest-list');
 const openRows = new Set();
@@ -562,7 +568,7 @@ function renderSuggestList() {
   if (!state.apiKey) return msg('Add your free TMDB key in <b>Settings</b> to start.');
   if (Object.keys(state.ratings).length < 3) return msg('Rate at least 3 things in <b>Training</b> first, so I can learn your taste.');
   if (!d.queue.length) {
-    if (d.empty) return msg('No more matches right now. Rate more in Training, or try <b>Everything</b> mode.');
+    if (d.empty) return msg('No more matches right now. Rate more in Training, or switch to <b>All</b>.');
     msg('Finding your best matches…');
     fillDeck('suggest');
     return;
@@ -590,7 +596,8 @@ function sugRow(t, rank) {
         <div class="rank">${rank}</div>${img}
         <div class="grow"><div class="name">${esc(t.title)}</div>
           <div class="sub">${esc(bits.filter(Boolean).join(' · '))}</div>
-          ${mine.length ? `<div class="sub on-mine">✓ ${esc(mine.map((w) => w.name).join(', '))}</div>` : ''}</div>
+          ${mine.length ? `<div class="sub on-mine">✓ ${esc(mine.map((w) => w.name).join(', '))}</div>`
+            : rest.length ? `<div class="sub">${esc(rest.slice(0, 2).map((w) => w.name).join(', '))}</div>` : ''}</div>
         <div class="score">${t.score}</div>
       </div>
       <div class="srow-more">
@@ -697,6 +704,110 @@ function askRating(title, current) {
     sheet.onclick = (e) => { if (e.target === sheet) done(null); };
   });
 }
+
+// ---------- Training search ----------
+// Lets you add what you've already watched, by title, genre ("horror") or theme ("heist").
+// After you rate something well, "More like this" uses TMDB's similar-titles list.
+
+const tsInput = $('#train-search');
+const tsList = $('#train-results');
+const tsItems = new Map();
+let tsSections = [];
+let tsTimer;
+let tsSeq = 0;
+let genreList = null;
+
+async function allGenres() {
+  if (!genreList) {
+    const [m, t] = await Promise.all([tmdb('/genre/movie/list'), tmdb('/genre/tv/list')]);
+    genreList = { movie: m.genres, tv: t.genres };
+  }
+  return genreList;
+}
+
+function setTrainSearch(on) {
+  $('#deck').hidden = on;
+  $('.deck-buttons').hidden = on;
+  $('#deck-hint').hidden = on;
+  tsList.hidden = !on;
+}
+
+tsInput.addEventListener('input', () => {
+  clearTimeout(tsTimer);
+  const q = tsInput.value.trim();
+  setTrainSearch(!!q);
+  if (!q) return renderDeck();
+  tsTimer = setTimeout(() => runTrainSearch(q), 350);
+});
+
+async function runTrainSearch(q) {
+  const seq = ++tsSeq;
+  tsList.innerHTML = '<li class="sub">Searching…</li>';
+  try {
+    const ql = q.toLowerCase();
+    const [titles, kws, g] = await Promise.all([
+      tmdb('/search/multi', { query: q, include_adult: false }),
+      tmdb('/search/keyword', { query: q }),
+      allGenres(),
+    ]);
+    const sections = [];
+    const tl = titles.results.filter((it) => it.media_type === 'movie' || it.media_type === 'tv').slice(0, 8).map((it) => fromListItem(it));
+    if (tl.length) sections.push(['Titles', tl]);
+    const jobs = [];
+    for (const type of ['movie', 'tv']) {
+      const gm = g[type].find((x) => x.name.toLowerCase().includes(ql));
+      if (gm) {
+        jobs.push(tmdb(`/discover/${type}`, { with_genres: gm.id, sort_by: 'vote_count.desc' })
+          .then((r) => [`Popular ${gm.name} ${type === 'tv' ? 'shows' : 'movies'}`, r.results.slice(0, 10).map((it) => fromListItem(it, type))]));
+      }
+    }
+    const kw = kws.results.find((k) => k.name.toLowerCase() === ql) || kws.results[0];
+    if (kw) {
+      jobs.push(Promise.all(['movie', 'tv'].map((type) => tmdb(`/discover/${type}`, { with_keywords: kw.id, sort_by: 'vote_count.desc' })))
+        .then(([m, t]) => [`About “${kw.name}”`, [...m.results.slice(0, 8).map((it) => fromListItem(it, 'movie')), ...t.results.slice(0, 4).map((it) => fromListItem(it, 'tv'))]]));
+    }
+    for (const r of await Promise.allSettled(jobs)) if (r.status === 'fulfilled' && r.value[1].length) sections.push(r.value);
+    if (seq !== tsSeq) return;
+    tsSections = sections;
+    renderTrainResults();
+  } catch (e) {
+    if (seq !== tsSeq) return;
+    tsList.innerHTML = `<li class="sub">${e.message === 'NO_KEY' ? 'Add your TMDB key in Settings first.' : 'Search failed. Try again.'}</li>`;
+  }
+}
+
+function renderTrainResults() {
+  tsItems.clear();
+  if (!tsSections.length) { tsList.innerHTML = '<li class="sub">No matches. Try a title, a genre like “horror”, or a theme like “heist”.</li>'; return; }
+  tsList.innerHTML = tsSections.map(([head, items]) => `<li class="list-head">${esc(head)}</li>` + items.map((t) => {
+    const k = keyOf(t.type, t.id);
+    tsItems.set(k, t);
+    const r = state.ratings[k];
+    const right = r ? `<div class="score">${r.score}</div>`
+      : k in state.unseen ? '<div class="acts"><span class="sub">Not seen</span><button class="mini" data-do="right">Seen it</button></div>'
+      : '<div class="acts"><button class="mini" data-do="right">Seen it</button><button class="mini" data-do="left">Not seen</button></div>';
+    return row(t, right);
+  }).join('')).join('');
+}
+
+tsList.addEventListener('click', async (e) => {
+  const li = e.target.closest('li[data-k]');
+  if (!li) return;
+  const t = tsItems.get(li.dataset.k);
+  const btn = e.target.closest('button[data-do]');
+  // Tapping a rated row lets you change its score.
+  if (!btn && !(li.dataset.k in state.ratings)) return;
+  await act(btn ? btn.dataset.do : 'right', t, null);
+  const r = state.ratings[li.dataset.k];
+  if (r && r.score >= 60 && !tsSections.some(([h]) => h.endsWith(t.title))) {
+    try {
+      const rec = await tmdb(`/${t.type}/${t.id}/recommendations`);
+      const items = rec.results.slice(0, 10).map((it) => fromListItem(it, t.type));
+      if (items.length) tsSections.unshift([`More like ${t.title}`, items]);
+    } catch {}
+  }
+  renderTrainResults();
+});
 
 // ---------- Lists: pinned, ratings, search ----------
 
@@ -871,7 +982,6 @@ function render() {
   $('#title').textContent = TITLES[currentTab];
   const deckTab = currentTab === 'train' || currentTab === 'suggest';
   $('#view-suggest').hidden = currentTab !== 'suggest';
-  $('#mode-toggle').hidden = !deckTab;
   $('#undo').hidden = !deckTab || !lastAction;
   $('#view-deck').hidden = currentTab !== 'train';
   $('#view-pinned').hidden = currentTab !== 'pinned';

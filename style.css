@@ -322,6 +322,8 @@ main { flex: 1; overflow: hidden; position: relative; }
 .login .btn { width: 100%; margin: 4px 0; }
 
 /* For You list */
+.toggle.wide { margin: 0 0 6px; }
+.toggle.wide button { flex: 1; padding: 8px 6px; }
 #view-suggest .hint { margin: 0 0 6px; }
 .list li.swipe-wrap { display: block; padding: 0; position: relative; overflow: hidden; border-bottom: 0; margin-bottom: 8px; border-radius: 14px; }
 .swipe-bg {
@@ -350,6 +352,12 @@ main { flex: 1; overflow: hidden; position: relative; }
 .row-actions { display: flex; gap: 8px; margin-top: 12px; }
 .row-actions .mini { flex: 1; }
 .empty-row { padding: 30px 10px !important; text-align: center; display: block !important; border: 0 !important; }
+
+/* Training search */
+#train-search { margin: 0 0 8px; flex: none; }
+.train-results { flex: 1; overflow-y: auto; }
+.train-results .list-head { margin-top: 10px; }
+.train-results .acts { display: flex; gap: 6px; flex: none; }
 
 /* Profile */
 .bio p { margin: 0; line-height: 1.55; }

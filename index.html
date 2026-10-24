@@ -16,16 +16,14 @@
     <div class="top-actions">
       <button id="undo" class="chip" hidden>Undo</button>
       <button id="open-settings" class="chip" hidden>⚙️ Settings</button>
-      <div class="toggle" id="mode-toggle" role="group" aria-label="What to show">
-        <button data-mode="mine">My services</button>
-        <button data-mode="all">Everything</button>
-      </div>
     </div>
   </header>
 
   <main>
     <!-- Training and Suggestions share the swipe deck -->
     <section id="view-deck" class="view">
+      <input id="train-search" class="search" type="search" placeholder="🔍 Add what you've watched: title, genre, or theme" autocomplete="off">
+      <ul id="train-results" class="list train-results" hidden></ul>
       <div id="deck" class="deck"></div>
       <div class="deck-buttons">
         <button class="round no" data-act="left" aria-label="Haven't seen it">✕</button>
@@ -36,7 +34,12 @@
     </section>
 
     <section id="view-suggest" class="view" hidden>
-      <p class="hint">Top 25 you haven’t seen. Tap to open · Swipe right = seen it · Left = remove</p>
+      <div class="toggle wide" id="mode-toggle" role="group" aria-label="Where it's streaming">
+        <button data-mode="mine">On my services</button>
+        <button data-mode="other">Not on mine</button>
+        <button data-mode="all">All</button>
+      </div>
+      <p class="hint">Top 100 you haven’t seen. Tap to open · Swipe right = seen it · Left = remove</p>
       <ul id="suggest-list" class="list"></ul>
     </section>
 
