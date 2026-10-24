@@ -93,6 +93,11 @@ function mergeIn(remoteData) {
   }
   if (!state.apiKey) state.apiKey = r.apiKey;
   state.names = Object.assign({}, r.names, state.names);
+  // A brand-new phone starts with an empty "Me". Once the family's profiles arrive, it isn't needed.
+  const isEmpty = (p) => !Object.keys(p.ratings).length && !Object.keys(p.pinned).length && !Object.keys(p.unseen).length && !Object.keys(p.rejected).length;
+  for (const [id, p] of Object.entries(state.profiles)) {
+    if (p.name === 'Me' && isEmpty(p) && Object.keys(r.profiles).length && !Object.values(r.profiles).some((x) => x.name === 'Me')) delete state.profiles[id];
+  }
   const byName = (name) => Object.keys(state.profiles).find((id) => state.profiles[id].name.trim().toLowerCase() === name.trim().toLowerCase());
   for (const [rid, rp] of Object.entries(r.profiles)) {
     let lid = byName(rp.name);
