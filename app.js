@@ -94,6 +94,11 @@ async function details(t) {
         seasons: d.number_of_seasons || 0,
         genres: (d.genres || []).map((g) => g.name),
         features: featuresOf(d, t.type),
+        cast: ((d.credits && d.credits.cast) || []).slice(0, 4).map((c) => c.name),
+        makers: [
+          ...((d.credits && d.credits.crew) || []).filter((c) => c.job === 'Director').slice(0, 2),
+          ...(d.created_by || []).slice(0, 2),
+        ].map((c) => c.name),
         where: whereOf(d['watch/providers']),
       });
       detailCache.set(k, full);
@@ -300,16 +305,20 @@ async function mapLimit(items, n, fn) {
   return out;
 }
 
+const SUGGEST_COUNT = 25;
+
 async function fillDeck(name) {
   const d = decks[name];
-  if (d.loading || d.queue.length >= 5 || d.empty) return;
+  const want = name === 'suggest' ? SUGGEST_COUNT : 5;
+  if (d.loading || d.queue.length >= want || d.empty) return;
   d.loading = true;
   try {
-    for (let tries = 0; tries < 6 && d.queue.length < 5; tries++) {
+    for (let tries = 0; tries < 6 && d.queue.length < want; tries++) {
       if (name === 'train' && state.train.done) break;
       const more = name === 'train' ? await moreTraining() : await moreSuggestions();
       const inQueue = new Set(d.queue.map((t) => keyOf(t.type, t.id)));
       d.queue.push(...more.filter((t) => !handled(keyOf(t.type, t.id)) && !inQueue.has(keyOf(t.type, t.id))));
+      if (name === 'suggest') d.queue.sort((a, b) => b.score - a.score);
       if (name === 'suggest' && (suggestRound > 5 || !more.length)) break;
     }
     if (!d.queue.length) d.empty = true;
@@ -335,6 +344,7 @@ let currentTab = 'train';
 let topCard = null;
 
 function renderDeck() {
+  if (currentTab === 'suggest') return renderSuggestList();
   const d = decks[currentTab];
   if (!d) return;
   deckEl.innerHTML = '';
@@ -369,7 +379,8 @@ function showDeckError(e) {
   const msg = e.message === 'BAD_KEY' ? 'That TMDB key didn’t work. Check it in <b>Settings</b>.'
     : e.message === 'NO_KEY' ? 'Add your free TMDB key in <b>Settings</b> to start.'
     : 'Couldn’t reach TMDB. Check your internet and try again.';
-  if (currentTab === 'train' || currentTab === 'suggest') emptyMsg(msg);
+  if (currentTab === 'train') emptyMsg(msg);
+  if (currentTab === 'suggest') $('#suggest-list').innerHTML = `<li class="sub empty-row">${msg}</li>`;
 }
 
 function esc(s) {
@@ -522,6 +533,131 @@ document.querySelectorAll('.deck-buttons button').forEach((b) =>
     const t = decks[currentTab].queue[0];
     if (t && topCard) act(b.dataset.act, t, topCard);
   }));
+
+// ---------- For You list ----------
+// Top 25 unseen picks. Tap to expand. Swipe right = seen it, swipe left = remove.
+
+const sugEl = $('#suggest-list');
+const openRows = new Set();
+
+function renderSuggestList() {
+  const d = decks.suggest;
+  const msg = (html) => (sugEl.innerHTML = `<li class="sub empty-row">${html}</li>`);
+  if (!state.apiKey) return msg('Add your free TMDB key in <b>Settings</b> to start.');
+  if (Object.keys(state.ratings).length < 3) return msg('Rate at least 3 things in <b>Training</b> first, so I can learn your taste.');
+  if (!d.queue.length) {
+    if (d.empty) return msg('No more matches right now. Rate more in Training, or try <b>Everything</b> mode.');
+    msg('Finding your best matches…');
+    fillDeck('suggest');
+    return;
+  }
+  sugEl.innerHTML = d.queue.slice(0, SUGGEST_COUNT).map((t, i) => sugRow(t, i + 1)).join('');
+  sugEl.querySelectorAll('.srow').forEach(attachRowSwipe);
+  if (d.queue.length < SUGGEST_COUNT) fillDeck('suggest');
+}
+
+function sugRow(t, rank) {
+  const k = keyOf(t.type, t.id);
+  const open = openRows.has(k);
+  const img = t.poster ? `<img src="${IMG}w154${t.poster}" alt="" loading="lazy">` : '<div class="ph"></div>';
+  const bits = [t.type === 'tv' ? 'TV show' : 'Movie', t.year];
+  if (t.type === 'movie' && t.runtime) bits.push(t.runtime + ' min');
+  if (t.type === 'tv' && t.seasons) bits.push(t.seasons + (t.seasons === 1 ? ' season' : ' seasons'));
+  const where = t.where || [];
+  const mine = where.filter((w) => w.kind === 'flatrate' && state.services.includes(w.id));
+  const rest = where.filter((w) => !mine.includes(w)).slice(0, 4);
+  const whyText = why(t);
+  return `<li class="swipe-wrap" data-k="${k}">
+    <div class="swipe-bg"><span class="bg-yes">✓ Seen it</span><span class="bg-no">Remove ✕</span></div>
+    <div class="srow${open ? ' open' : ''}">
+      <div class="srow-head">
+        <div class="rank">${rank}</div>${img}
+        <div class="grow"><div class="name">${esc(t.title)}</div>
+          <div class="sub">${esc(bits.filter(Boolean).join(' · '))}</div>
+          ${mine.length ? `<div class="sub on-mine">✓ ${esc(mine.map((w) => w.name).join(', '))}</div>` : ''}</div>
+        <div class="score">${t.score}</div>
+      </div>
+      <div class="srow-more">
+        <div class="pred">You'll like it: <b>${t.score}</b> / 100${t.vote ? ` <span class="sub">· TMDB ${Math.round(t.vote * 10)}</span>` : ''}</div>
+        ${whyText ? `<div class="sub">${esc(whyText)}</div>` : ''}
+        ${t.genres && t.genres.length ? `<div class="sub">${esc(t.genres.join(', '))}</div>` : ''}
+        <p>${esc(t.overview) || 'No description yet.'}</p>
+        ${t.cast && t.cast.length ? `<div class="sub"><b>Starring:</b> ${esc(t.cast.join(', '))}</div>` : ''}
+        ${t.makers && t.makers.length ? `<div class="sub"><b>${t.type === 'tv' ? 'Created by' : 'Directed by'}:</b> ${esc(t.makers.join(', '))}</div>` : ''}
+        <div class="where">${where.length
+          ? mine.map((w) => `<span class="mine">✓ ${esc(w.name)}</span>`).join('') + rest.map((w) => `<span>${esc(w.name)}</span>`).join('')
+          : '<span>Not streaming in the US right now</span>'}</div>
+        <div class="row-actions">
+          <button class="mini" data-do="right">✓ Seen it</button>
+          <button class="mini" data-do="up">📌 Pin</button>
+          <button class="mini" data-do="left">✕ Remove</button>
+        </div>
+      </div>
+    </div>
+  </li>`;
+}
+
+function itemFor(li) {
+  return decks.suggest.queue.find((t) => keyOf(t.type, t.id) === li.dataset.k);
+}
+
+sugEl.addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-k]');
+  if (!li || li.dataset.swiped) return;
+  const t = itemFor(li);
+  if (!t) return;
+  const btn = e.target.closest('button[data-do]');
+  if (btn) return act(btn.dataset.do, t, null);
+  const k = li.dataset.k;
+  openRows.has(k) ? openRows.delete(k) : openRows.add(k);
+  li.querySelector('.srow').classList.toggle('open');
+});
+
+function attachRowSwipe(row) {
+  const li = row.parentElement;
+  let sx = 0, sy = 0, dx = 0, mode = null;
+  row.addEventListener('pointerdown', (e) => {
+    sx = e.clientX;
+    sy = e.clientY;
+    dx = 0;
+    mode = null;
+    delete li.dataset.swiped;
+    row.style.transition = 'none';
+  });
+  row.addEventListener('pointermove', (e) => {
+    if (mode === 'scroll' || e.buttons === 0 && e.pointerType === 'mouse') return;
+    const mx = e.clientX - sx;
+    const my = e.clientY - sy;
+    // Decide once per touch: sideways = swipe, up/down = let the list scroll.
+    if (!mode) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      mode = Math.abs(mx) > Math.abs(my) ? 'swipe' : 'scroll';
+      if (mode === 'swipe') row.setPointerCapture(e.pointerId);
+      else return;
+    }
+    dx = mx;
+    row.style.transform = `translateX(${dx}px)`;
+    li.classList.toggle('going-yes', dx > 0);
+    li.classList.toggle('going-no', dx < 0);
+  });
+  const end = () => {
+    if (mode !== 'swipe') return;
+    mode = null;
+    li.dataset.swiped = '1';
+    setTimeout(() => delete li.dataset.swiped, 50);
+    const t = itemFor(li);
+    const far = Math.abs(dx) > row.offsetWidth * 0.3;
+    row.style.transition = 'transform .25s';
+    if (far && t) {
+      row.style.transform = `translateX(${dx > 0 ? 110 : -110}%)`;
+      setTimeout(() => act(dx > 0 ? 'right' : 'left', t, null), 200);
+    } else {
+      row.style.transform = '';
+    }
+  };
+  row.addEventListener('pointerup', end);
+  row.addEventListener('pointercancel', end);
+}
 
 // ---------- Rating sheet ----------
 
@@ -718,9 +854,10 @@ const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', rating
 function render() {
   $('#title').textContent = TITLES[currentTab];
   const deckTab = currentTab === 'train' || currentTab === 'suggest';
+  $('#view-suggest').hidden = currentTab !== 'suggest';
   $('#mode-toggle').hidden = !deckTab;
   $('#undo').hidden = !deckTab || !lastAction;
-  $('#view-deck').hidden = !deckTab;
+  $('#view-deck').hidden = currentTab !== 'train';
   $('#view-pinned').hidden = currentTab !== 'pinned';
   $('#view-ratings').hidden = currentTab !== 'ratings';
   $('#view-settings').hidden = currentTab !== 'settings';

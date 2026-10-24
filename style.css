@@ -320,3 +320,33 @@ main { flex: 1; overflow: hidden; position: relative; }
   font-size: 16px;
 }
 .login .btn { width: 100%; margin: 4px 0; }
+
+/* For You list */
+#view-suggest .hint { margin: 0 0 6px; }
+.list li.swipe-wrap { display: block; padding: 0; position: relative; overflow: hidden; border-bottom: 0; margin-bottom: 8px; border-radius: 14px; }
+.swipe-bg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 18px;
+  font-weight: 700;
+  background: var(--panel-2);
+}
+.swipe-wrap.going-yes .swipe-bg { background: var(--yes); color: #06281a; }
+.swipe-wrap.going-no .swipe-bg { background: var(--no); color: #2b0610; }
+.swipe-wrap.going-yes .bg-no, .swipe-wrap.going-no .bg-yes { visibility: hidden; }
+.srow { position: relative; background: var(--panel); border-radius: 14px; padding: 10px; touch-action: pan-y; user-select: none; }
+.srow-head { display: flex; gap: 10px; align-items: center; }
+.rank { width: 22px; text-align: center; color: var(--muted); font-weight: 700; font-size: 14px; flex: none; }
+.on-mine { color: var(--yes); }
+.srow-more { display: none; padding: 10px 2px 2px; font-size: 14px; }
+.srow.open .srow-more { display: block; }
+.srow-more p { margin: 8px 0; }
+.srow-more .sub { margin-top: 3px; }
+.pred { font-size: 15px; margin-bottom: 4px; }
+.pred b { color: var(--accent); font-size: 18px; }
+.row-actions { display: flex; gap: 8px; margin-top: 12px; }
+.row-actions .mini { flex: 1; }
+.empty-row { padding: 30px 10px !important; text-align: center; display: block !important; border: 0 !important; }
