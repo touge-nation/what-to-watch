@@ -22,24 +22,24 @@
   <main>
     <!-- Training and Suggestions share the swipe deck -->
     <section id="view-deck" class="view">
-      <input id="train-search" class="search" type="search" placeholder="🔍 Add what you've watched: title, genre, or theme" autocomplete="off">
+      <input id="train-search" class="search" type="search" placeholder="🔍 Search title, genre, or theme" autocomplete="off">
       <ul id="train-results" class="list train-results" hidden></ul>
       <div id="deck" class="deck"></div>
       <div class="deck-buttons">
-        <button class="round no" data-act="left" aria-label="Haven't seen it">✕</button>
-        <button class="round pin" data-act="up" aria-label="Pin it">📌</button>
-        <button class="round yes" data-act="right" aria-label="Seen it">✓</button>
+        <div class="db"><button class="round no" data-act="left" aria-label="Haven't seen it">✕</button><span>Not seen</span></div>
+        <div class="db"><button class="round pin" data-act="up" aria-label="Pin it">📌</button><span>Pin</span></div>
+        <div class="db"><button class="round yes" data-act="right" aria-label="Seen it">✓</button><span>Seen it</span></div>
       </div>
       <p class="hint" id="deck-hint"></p>
     </section>
 
     <section id="view-suggest" class="view" hidden>
       <div class="toggle wide" id="mode-toggle" role="group" aria-label="Where it's streaming">
-        <button data-mode="mine">On my services</button>
-        <button data-mode="other">Not on mine</button>
+        <button data-mode="mine">My services</button>
+        <button data-mode="other">Elsewhere</button>
         <button data-mode="all">All</button>
       </div>
-      <p class="hint">Top 100 you haven’t seen. Tap to open · Swipe right = seen it · Left = remove</p>
+      <p class="hint">Tap to open · Swipe right = seen it · Left = remove</p>
       <ul id="suggest-list" class="list"></ul>
     </section>
 

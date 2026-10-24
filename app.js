@@ -369,7 +369,7 @@ function renderDeck() {
   deckEl.innerHTML = '';
   topCard = null;
   $('#deck-hint').textContent = currentTab === 'train'
-    ? 'Right = seen it · Left = haven\u2019t seen · Up = pin'
+    ? 'Or swipe: right = seen it · left = not seen · up = pin'
     : 'Only stuff you haven’t seen, best match first';
 
   if (!state.apiKey) return emptyMsg('Add your free TMDB key in <b>Settings</b> to start.');
@@ -783,10 +783,12 @@ function renderTrainResults() {
     const k = keyOf(t.type, t.id);
     tsItems.set(k, t);
     const r = state.ratings[k];
-    const right = r ? `<div class="score">${r.score}</div>`
-      : k in state.unseen ? '<div class="acts"><span class="sub">Not seen</span><button class="mini" data-do="right">Seen it</button></div>'
-      : '<div class="acts"><button class="mini" data-do="right">Seen it</button><button class="mini" data-do="left">Not seen</button></div>';
-    return row(t, right);
+    // Buttons sit under the title so long titles aren't squeezed on small phones.
+    if (r) return row(t, `<div class="score">${r.score}</div>`);
+    const acts = k in state.unseen
+      ? '<div class="acts"><button class="mini" data-do="right">✓ Seen it</button><span class="sub">Marked not seen</span></div>'
+      : '<div class="acts"><button class="mini" data-do="right">✓ Seen it</button><button class="mini" data-do="left">Not seen</button></div>';
+    return row(t, '', acts);
   }).join('')).join('');
 }
 
@@ -811,11 +813,11 @@ tsList.addEventListener('click', async (e) => {
 
 // ---------- Lists: pinned, ratings, search ----------
 
-function row(item, right) {
+function row(item, right, below = '') {
   const img = item.poster ? `<img src="${IMG}w154${item.poster}" alt="" loading="lazy">` : '<div class="ph"></div>';
   return `<li data-k="${keyOf(item.type, item.id)}">${img}
     <div class="grow"><div class="name">${esc(item.title)}</div>
-    <div class="sub">${item.type === 'tv' ? 'TV show' : 'Movie'}${item.year ? ' · ' + item.year : ''}</div></div>${right}</li>`;
+    <div class="sub">${item.type === 'tv' ? 'TV show' : 'Movie'}${item.year ? ' · ' + item.year : ''}</div>${below}</div>${right}</li>`;
 }
 
 function renderPinned() {

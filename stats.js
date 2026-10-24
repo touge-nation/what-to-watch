@@ -77,7 +77,7 @@ function spider(genres) {
     svg += `<circle cx="${x}" cy="${y}" r="5" class="sp-dot"/><circle cx="${x}" cy="${y}" r="16" class="sp-hit" data-tip="${esc(g.name)}: average ${g.avg} from ${g.n} rated"/>`;
     const [lx, ly] = pt(i, 1.2);
     const anchor = Math.abs(lx - c) < 8 ? 'middle' : lx > c ? 'start' : 'end';
-    svg += `<text x="${lx}" y="${ly}" text-anchor="${anchor}" class="sp-label">${esc(short(g.name))}<tspan x="${lx}" dy="18" class="sp-val">${g.avg}</tspan></text>`;
+    svg += `<text x="${lx}" y="${ly}" text-anchor="${anchor}" class="sp-label">${esc(short(g.name))}<tspan x="${lx}" dy="21" class="sp-val">${g.avg}</tspan></text>`;
   });
   return `<svg viewBox="-70 -22 ${size + 140} ${size + 50}" class="spider" role="img" aria-label="Average score by genre">${svg}</svg>
     <p class="small center">Average score you give each genre · tap a dot</p>`;
