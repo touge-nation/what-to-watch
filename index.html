@@ -25,13 +25,11 @@
   <main>
     <!-- Training and Suggestions share the swipe deck -->
     <section id="view-deck" class="view">
-      <input id="train-search" class="search" type="search" placeholder="🔍 Search title, genre, or theme" autocomplete="off">
-      <div id="ts-filters" class="chips" hidden>
-        <button class="chip" data-f="all">All</button>
-        <button class="chip" data-f="genre">Genres</button>
-        <button class="chip" data-f="theme">Themes</button>
-        <button class="chip" data-f="title">Titles</button>
+      <div class="search-row">
+        <input id="train-search" class="search" type="search" placeholder="🔍 Find a movie or show" autocomplete="off">
+        <button id="train-filter-btn" class="chip filter-btn" aria-label="Filter what you swipe">⚙️ Filter</button>
       </div>
+      <div id="train-filter-bar" class="chips filter-bar" hidden></div>
       <ul id="train-results" class="list train-results" hidden></ul>
       <div id="deck" class="deck"></div>
       <div class="deck-buttons">
@@ -154,6 +152,30 @@
         </div>
       </form>
       <button id="who-add" class="btn ghost full">＋ Add a person</button>
+    </div>
+  </div>
+
+  <div id="filter-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2>What do you want to swipe on?</h2>
+      <h3 class="list-head">Type</h3>
+      <div id="filter-types" class="chip-wrap">
+        <button class="chip pick" data-t="both">Both</button>
+        <button class="chip pick" data-t="movie">Movies</button>
+        <button class="chip pick" data-t="tv">Shows</button>
+      </div>
+      <h3 class="list-head">Genres <span class="sub">(any of these)</span></h3>
+      <div id="filter-genres" class="chip-wrap"></div>
+      <h3 class="list-head">Themes <span class="sub">(any of these)</span></h3>
+      <div id="filter-themes" class="chip-wrap"></div>
+      <input id="filter-theme-input" class="search" type="search" placeholder="Type a theme, like heist or time travel" autocomplete="off">
+      <div id="filter-theme-results" class="chip-wrap"></div>
+      <h3 class="list-head">Streaming on <span class="sub">(any of these)</span> <button id="filter-my" class="chip small-chip">Use my services</button></h3>
+      <div id="filter-services" class="chip-wrap"></div>
+      <div class="sheet-buttons">
+        <button id="filter-clear" class="btn ghost">Clear all</button>
+        <button id="filter-apply" class="btn">Show these</button>
+      </div>
     </div>
   </div>
 

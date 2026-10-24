@@ -330,7 +330,48 @@ const decks = {
 };
 
 // Training: top movies of the last 10 years, then current popular movies and shows.
+// Optional Training filter: genres and/or streaming services, movies and/or shows.
+// While it's on, the deck only shows matching titles, most-watched first.
+const blankFilter = () => ({ genres: [], themes: [], services: [], types: ['movie', 'tv'] });
+let trainFilter = blankFilter();
+let tf = { page: { movie: 1, tv: 1 }, done: { movie: false, tv: false } };
+const filterOn = () => trainFilter.genres.length > 0 || trainFilter.themes.length > 0 || trainFilter.services.length > 0 || trainFilter.types.length < 2;
+
+async function moreFiltered() {
+  const all = await allGenres();
+  const lists = await Promise.all(trainFilter.types.map(async (type) => {
+    if (tf.done[type]) return [];
+    const ids = [...new Set(trainFilter.genres.map((n) => { const g = all[type].find((x) => x.name === (GENRE_ALIAS[type][n] || n)); return g && g.id; }).filter(Boolean))];
+    // Picked genres that only exist for the other type (like "Soap" for shows) mean nothing to show here.
+    if (trainFilter.genres.length && !ids.length) { tf.done[type] = true; return []; }
+    const params = { sort_by: 'vote_count.desc', include_adult: false };
+    if (ids.length) params.with_genres = ids.join('|');
+    if (trainFilter.themes.length) params.with_keywords = trainFilter.themes.map((t) => t.id).join('|');
+    if (trainFilter.services.length) Object.assign(params, { with_watch_providers: trainFilter.services.join('|'), watch_region: REGION, with_watch_monetization_types: 'flatrate' });
+    // Two pages at a time, because the strict genre check below drops some.
+    const got = [];
+    for (let i = 0; i < 2 && !tf.done[type]; i++) {
+      const r = await tmdb(`/discover/${type}`, Object.assign({ page: tf.page[type] }, params));
+      tf.page[type]++;
+      if (tf.page[type] > Math.min(r.total_pages || 1, 100)) tf.done[type] = true;
+      got.push(...r.results);
+    }
+    // TMDB counts a title as "Romance" even if romance is a side plot. Only keep titles where a
+    // picked genre is one of their first two (main) genres.
+    const strict = ids.length ? got.filter((it) => (it.genre_ids || []).slice(0, 2).some((g) => ids.includes(g))) : got;
+    return strict.map((it) => fromListItem(it, type));
+  }));
+  const out = [];
+  const [a = [], b = []] = lists;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i]) out.push(a[i]);
+    if (b[i]) out.push(b[i]);
+  }
+  return out;
+}
+
 async function moreTraining() {
+  if (filterOn()) return moreFiltered();
   const tr = state.train;
   const out = [];
   if (tr.phase === 0) {
@@ -436,7 +477,7 @@ async function fillDeck(name) {
   d.loading = true;
   try {
     for (let tries = 0; tries < (name === 'suggest' ? SUGGEST_ROUNDS : 6) && d.queue.length < want; tries++) {
-      if (name === 'train' && state.train.done) break;
+      if (name === 'train' && (filterOn() ? trainFilter.types.every((t) => tf.done[t]) : state.train.done)) break;
       const more = name === 'train' ? await moreTraining() : await moreSuggestions();
       const inQueue = new Set(d.queue.map((t) => keyOf(t.type, t.id)));
       const done = name === 'train' ? handledTrain : handled;
@@ -459,6 +500,7 @@ async function fillDeck(name) {
 
 function resetDecks() {
   decks.train = { queue: [], loading: false, empty: false };
+  tf = { page: { movie: 1, tv: 1 }, done: { movie: false, tv: false } };
   decks.suggest = { queue: [], loading: false, empty: false };
   suggestRound = 0;
 }
@@ -814,6 +856,106 @@ function askRating(title, current) {
   });
 }
 
+// ---------- Training filter ----------
+
+let draft = null;
+
+async function openFilter() {
+  draft = JSON.parse(JSON.stringify(trainFilter));
+  $('#filter-theme-input').value = '';
+  $('#filter-theme-results').innerHTML = '';
+  $('#filter-sheet').hidden = false;
+  $('#filter-genres').innerHTML = $('#filter-services').innerHTML = '<span class="sub">Loading…</span>';
+  try {
+    const [g, p] = await Promise.all([allGenres(), allProviders()]);
+    const names = [...new Set([...g.movie, ...g.tv].map((x) => x.name))].sort();
+    $('#filter-genres').innerHTML = names.map((n) => `<button class="chip pick" data-g="${esc(n)}">${esc(n)}</button>`).join('');
+    // Your own services first.
+    const sorted = [...p].sort((a, b) => state.services.includes(b.provider_id) - state.services.includes(a.provider_id));
+    $('#filter-services').innerHTML = sorted.map((x) => `<button class="chip pick" data-s="${x.provider_id}">${esc(x.provider_name)}</button>`).join('');
+    renderDraft();
+  } catch {
+    $('#filter-genres').innerHTML = '<span class="sub">Couldn\u2019t load. Check your TMDB key and internet.</span>';
+    $('#filter-services').innerHTML = '';
+  }
+}
+
+function renderDraft() {
+  document.querySelectorAll('#filter-genres .pick').forEach((b) => b.classList.toggle('on', draft.genres.includes(b.dataset.g)));
+  document.querySelectorAll('#filter-services .pick').forEach((b) => b.classList.toggle('on', draft.services.includes(Number(b.dataset.s))));
+  $('#filter-themes').innerHTML = draft.themes.length
+    ? draft.themes.map((t) => `<button class="chip pick on" data-rm-theme="${t.id}">${esc(t.name)} ✕</button>`).join('')
+    : '<span class="sub">None picked</span>';
+  const t = draft.types.length === 2 ? 'both' : draft.types[0];
+  document.querySelectorAll('#filter-types .pick').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+}
+
+const toggleIn = (list, v) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+$('#filter-sheet').addEventListener('click', (e) => {
+  if (e.target.id === 'filter-sheet') return ($('#filter-sheet').hidden = true);
+  const b = e.target.closest('.pick');
+  if (!b) return;
+  if (b.dataset.rmTheme) draft.themes = draft.themes.filter((t) => String(t.id) !== b.dataset.rmTheme);
+  if (b.dataset.themeId && !draft.themes.some((t) => String(t.id) === b.dataset.themeId)) {
+    draft.themes = [...draft.themes, { id: Number(b.dataset.themeId), name: b.dataset.themeName }];
+    $('#filter-theme-input').value = '';
+    $('#filter-theme-results').innerHTML = '';
+  }
+  if (b.dataset.g) draft.genres = toggleIn(draft.genres, b.dataset.g);
+  if (b.dataset.s) draft.services = toggleIn(draft.services, Number(b.dataset.s));
+  if (b.dataset.t) draft.types = b.dataset.t === 'both' ? ['movie', 'tv'] : [b.dataset.t];
+  renderDraft();
+});
+$('#filter-my').addEventListener('click', () => { draft.services = [...state.services]; renderDraft(); });
+$('#filter-clear').addEventListener('click', () => { draft = blankFilter(); renderDraft(); });
+
+// Themes are TMDB keywords, like "heist" or "time travel".
+let themeTimer;
+$('#filter-theme-input').addEventListener('input', (e) => {
+  clearTimeout(themeTimer);
+  const q = e.target.value.trim();
+  if (!q) { $('#filter-theme-results').innerHTML = ''; return; }
+  themeTimer = setTimeout(async () => {
+    try {
+      const r = await tmdb('/search/keyword', { query: q });
+      $('#filter-theme-results').innerHTML = r.results.slice(0, 8)
+        .map((k) => `<button class="chip pick" data-theme-id="${k.id}" data-theme-name="${esc(k.name)}">＋ ${esc(k.name)}</button>`).join('')
+        || '<span class="sub">No themes match.</span>';
+    } catch {
+      $('#filter-theme-results').innerHTML = '<span class="sub">Couldn\u2019t search themes.</span>';
+    }
+  }, 300);
+});
+$('#filter-apply').addEventListener('click', () => applyFilter(draft));
+$('#train-filter-btn').addEventListener('click', openFilter);
+
+function applyFilter(f) {
+  trainFilter = f;
+  tf = { page: { movie: 1, tv: 1 }, done: { movie: false, tv: false } };
+  decks.train = { queue: [], loading: false, empty: false };
+  $('#filter-sheet').hidden = true;
+  tsInput.value = '';
+  setTrainSearch(false);
+  renderFilterBar();
+  renderDeck();
+}
+
+function renderFilterBar() {
+  const bar = $('#train-filter-bar');
+  $('#train-filter-btn').classList.toggle('on', filterOn());
+  if (!filterOn()) { bar.hidden = true; return; }
+  const names = (providerList || []).reduce((m, p) => (m[p.provider_id] = p.provider_name, m), {});
+  const bits = [
+    ...(trainFilter.types.length < 2 ? [trainFilter.types[0] === 'tv' ? 'Shows' : 'Movies'] : []),
+    ...trainFilter.genres,
+    ...trainFilter.themes.map((t) => t.name),
+    ...trainFilter.services.map((id) => names[id] || 'Service'),
+  ];
+  bar.innerHTML = `<span class="sub">Only:</span> ${bits.map((b) => `<span class="chip on">${esc(b)}</span>`).join('')} <button class="chip" id="filter-off">✕ Clear</button>`;
+  bar.hidden = false;
+  $('#filter-off').onclick = () => applyFilter(blankFilter());
+}
+
 // ---------- Training search ----------
 // Lets you add what you've already watched, by title, genre ("horror") or theme ("heist").
 // After you rate something well, "More like this" uses TMDB's similar-titles list.
@@ -838,91 +980,31 @@ function setTrainSearch(on) {
   $('#deck').hidden = on;
   $('.deck-buttons').hidden = on;
   $('#deck-hint').hidden = on;
+  $('#train-filter-bar').hidden = on || !filterOn();
   tsList.hidden = !on;
-  $('#ts-filters').hidden = !on || !tsInput.value.trim();
 }
-
-// Filter chips: show all results, or only genres, themes or titles.
-let tsFilter = 'all';
-const SECTION_KINDS = { genre: 'Genres', theme: 'Themes', title: 'Titles' };
-document.querySelectorAll('#ts-filters button').forEach((b) => b.addEventListener('click', () => {
-  tsFilter = b.dataset.f;
-  renderFilterChips();
-  renderTrainResults();
-}));
-function renderFilterChips() {
-  document.querySelectorAll('#ts-filters button').forEach((b) => b.classList.toggle('on', b.dataset.f === tsFilter));
-}
-
-// With an empty search box, show genre presets to tap.
-async function showPresets() {
-  setTrainSearch(true);
-  tsList.innerHTML = '<li class="list-head">Pick a genre you like</li><li class="presets sub">Loading…</li>';
-  try {
-    const g = await allGenres();
-    if (tsInput.value.trim()) return;
-    const names = [...new Set([...g.movie, ...g.tv].map((x) => x.name))].sort();
-    tsList.innerHTML = '<li class="list-head">Pick a genre you like</li><li class="presets">'
-      + names.map((n) => `<button class="chip preset" data-g="${esc(n)}">${esc(n)}</button>`).join('') + '</li>'
-      + '<li class="sub small">Or type a title, or a theme like “heist” or “time travel”.</li>';
-  } catch {
-    tsList.innerHTML = '<li class="sub">Add your TMDB key in Settings first.</li>';
-  }
-}
-
-tsInput.addEventListener('focus', () => { if (!tsInput.value.trim()) showPresets(); });
-tsInput.addEventListener('blur', () => {
-  // Wait a moment so tapping a preset still works.
-  setTimeout(() => { if (!tsInput.value.trim() && document.activeElement !== tsInput) { setTrainSearch(false); renderDeck(); } }, 250);
-});
 
 tsInput.addEventListener('input', () => {
   clearTimeout(tsTimer);
   const q = tsInput.value.trim();
-  if (!q) return showPresets();
-  tsFilter = 'all';
-  setTrainSearch(true);
+  setTrainSearch(!!q);
+  if (!q) return renderDeck();
   tsTimer = setTimeout(() => runTrainSearch(q), 350);
 });
 
+// Search is only for finding a specific title. Genres and themes live in the Filter.
 async function runTrainSearch(q) {
   const seq = ++tsSeq;
   tsList.innerHTML = '<li class="sub">Searching…</li>';
   try {
-    const ql = q.toLowerCase();
-    const [titles, kws, g] = await Promise.all([
-      tmdb('/search/multi', { query: q, include_adult: false }),
-      tmdb('/search/keyword', { query: q }),
-      allGenres(),
-    ]);
-    const jobs = [];
-    // Closest genre first: exact name, then starts with, then contains ("action" -> "Action & Adventure" for TV).
-    const pickGenre = (list) => list.find((x) => x.name.toLowerCase() === ql)
-      || list.find((x) => x.name.toLowerCase().startsWith(ql))
-      || (ql.length >= 4 && list.find((x) => x.name.toLowerCase().includes(ql)));
-    for (const type of ['movie', 'tv']) {
-      const gm = pickGenre(g[type]);
-      if (gm) {
-        jobs.push(tmdb(`/discover/${type}`, { with_genres: gm.id, sort_by: 'vote_count.desc' })
-          .then((r) => ['genre', `${gm.name} ${type === 'tv' ? 'shows' : 'movies'}`, r.results.slice(0, 12).map((it) => fromListItem(it, type))]));
-      }
-    }
-    const kw = kws.results.find((k) => k.name.toLowerCase() === ql) || kws.results[0];
-    if (kw) {
-      jobs.push(Promise.all(['movie', 'tv'].map((type) => tmdb(`/discover/${type}`, { with_keywords: kw.id, sort_by: 'vote_count.desc' })))
-        .then(([m, t]) => ['theme', `Theme: “${kw.name}”`, [...m.results.slice(0, 8).map((it) => fromListItem(it, 'movie')), ...t.results.slice(0, 4).map((it) => fromListItem(it, 'tv'))]]));
-    }
-    const sections = [];
-    for (const r of await Promise.allSettled(jobs)) if (r.status === 'fulfilled' && r.value[2].length) sections.push(r.value);
-    const tl = titles.results.filter((it) => it.media_type === 'movie' || it.media_type === 'tv').slice(0, 8).map((it) => fromListItem(it));
-    if (tl.length) sections.push(['title', `Titles with “${q}”`, tl]);
+    const pages = await Promise.all([1, 2].map((page) => tmdb('/search/multi', { query: q, include_adult: false, page }).catch(() => ({ results: [] }))));
+    const seen = new Set();
+    const tl = pages.flatMap((r) => r.results)
+      .filter((it) => (it.media_type === 'movie' || it.media_type === 'tv') && !seen.has(it.media_type + it.id) && seen.add(it.media_type + it.id))
+      .map((it) => fromListItem(it));
     if (seq !== tsSeq) return;
     // Keep any "More like" lists from this session on top.
-    tsSections = [...tsSections.filter(([kind]) => kind === 'more'), ...sections];
-    // A preset tap asks for genres only; typing starts on All.
-    if (tsFilter !== 'all' && !sections.some(([kind]) => kind === tsFilter)) tsFilter = 'all';
-    renderFilterChips();
-    setTrainSearch(true);
+    tsSections = [...tsSections.filter(([kind]) => kind === 'more'), ...(tl.length ? [['title', `Results for “${q}”`, tl]] : [])];
     renderTrainResults();
   } catch (e) {
     if (seq !== tsSeq) return;
@@ -930,18 +1012,10 @@ async function runTrainSearch(q) {
   }
 }
 
-tsList.addEventListener('click', (e) => {
-  const p = e.target.closest('button.preset');
-  if (!p) return;
-  tsInput.value = p.dataset.g;
-  tsFilter = 'genre';
-  runTrainSearch(p.dataset.g);
-});
-
 function renderTrainResults() {
   tsItems.clear();
-  const shown = tsSections.filter(([kind]) => tsFilter === 'all' || kind === tsFilter);
-  if (!shown.length) { tsList.innerHTML = '<li class="sub">No matches. Try a title, a genre like “horror”, or a theme like “heist”.</li>'; return; }
+  const shown = tsSections;
+  if (!shown.length) { tsList.innerHTML = '<li class="sub">No titles match. To swipe on a genre or theme, use ⚙️ Filter.</li>'; return; }
   tsList.innerHTML = shown.map(([, head, items]) => `<li class="list-head">${esc(head)}</li>` + items.map((t) => {
     const k = keyOf(t.type, t.id);
     tsItems.set(k, t);
@@ -1060,13 +1134,22 @@ $('#search-results').addEventListener('click', async (e) => {
 
 // ---------- Settings ----------
 
+// The 40 biggest streaming services in the US, most popular first.
+let providerList = null;
+async function allProviders() {
+  if (!providerList) {
+    const r = await tmdb('/watch/providers/movie', { watch_region: REGION });
+    providerList = r.results.sort((a, b) => (a.display_priorities?.[REGION] ?? a.display_priority) - (b.display_priorities?.[REGION] ?? b.display_priority)).slice(0, 40);
+  }
+  return providerList;
+}
+
 async function renderSettings() {
   $('#api-key').value = state.apiKey;
   const box = $('#services');
   if (!state.apiKey) { box.innerHTML = '<p class="small">Add your key first.</p>'; return; }
   try {
-    const r = await tmdb('/watch/providers/movie', { watch_region: REGION });
-    const list = r.results.sort((a, b) => (a.display_priorities?.[REGION] ?? a.display_priority) - (b.display_priorities?.[REGION] ?? b.display_priority)).slice(0, 40);
+    const list = await allProviders();
     if (!state.servicesPicked) {
       state.services = list.filter((p) => DEFAULT_SERVICES.test(p.provider_name.trim())).map((p) => p.provider_id);
       state.servicesPicked = true;

@@ -459,3 +459,16 @@ main { flex: 1; min-height: 0; overflow: hidden; position: relative; }
 .group-scores span { background: var(--panel-2); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
 .group-scores span.low { color: var(--no); }
 .tabs button { font-size: 10px; }
+
+/* Training filter */
+.search-row { display: flex; gap: 8px; align-items: center; flex: none; margin: 0 0 8px; }
+.search-row #train-search { margin: 0; flex: 1; min-width: 0; }
+.filter-btn { flex: none; min-height: 44px; padding: 0 12px; }
+.filter-btn.on { background: var(--accent); color: #fff; }
+.filter-bar { align-items: center; flex-wrap: wrap; }
+.chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip.pick { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+.small-chip { font-size: 12px; padding: 4px 10px; margin-left: 6px; vertical-align: middle; }
+#filter-sheet .sheet-buttons { position: sticky; bottom: 0; background: var(--panel); padding-top: 10px; }
+#filter-sheet h3.list-head { margin-top: 14px; }
+#filter-theme-input { background: var(--panel-2); margin: 8px 0 6px; }
