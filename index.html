@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14121f">
+  <title>What to Watch</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1 id="title">Training</h1>
+    <div class="top-actions">
+      <button id="undo" class="chip" hidden>Undo</button>
+      <div class="toggle" id="mode-toggle" role="group" aria-label="What to show">
+        <button data-mode="mine">My services</button>
+        <button data-mode="all">Everything</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Training and Suggestions share the swipe deck -->
+    <section id="view-deck" class="view">
+      <div id="deck" class="deck"></div>
+      <div class="deck-buttons">
+        <button class="round no" data-act="left" aria-label="Not interested">✕</button>
+        <button class="round pin" data-act="up" aria-label="Pin it">📌</button>
+        <button class="round yes" data-act="right" aria-label="Seen it">✓</button>
+      </div>
+      <p class="hint" id="deck-hint"></p>
+    </section>
+
+    <section id="view-pinned" class="view" hidden>
+      <ul id="pinned-list" class="list"></ul>
+    </section>
+
+    <section id="view-ratings" class="view" hidden>
+      <input id="search" class="search" type="search" placeholder="Search a movie or show to rate…" autocomplete="off">
+      <ul id="search-results" class="list"></ul>
+      <h2 id="ratings-head" class="list-head"></h2>
+      <ul id="ratings-list" class="list"></ul>
+    </section>
+
+    <section id="view-settings" class="view" hidden>
+      <div class="card-box">
+        <h2>TMDB key</h2>
+        <p class="small">Free. Make an account at <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a>, then go to <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">Settings → API</a> and copy the <b>API Read Access Token</b> (or the API Key). It stays on this phone.</p>
+        <input id="api-key" type="password" placeholder="Paste key here" autocomplete="off">
+        <button id="save-key" class="btn">Save key</button>
+        <p id="key-status" class="small"></p>
+      </div>
+      <div class="card-box">
+        <h2>My services</h2>
+        <div id="services" class="services"><p class="small">Add your key first.</p></div>
+      </div>
+      <div class="card-box">
+        <h2>Backup</h2>
+        <p class="small">Your ratings live only on this phone. Save a backup now and then.</p>
+        <button id="export" class="btn">Save backup file</button>
+        <label class="btn ghost">Load backup file<input id="import" type="file" accept="application/json" hidden></label>
+      </div>
+      <p class="small center">Movie data from <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>. Streaming info by JustWatch. This app uses the TMDB API but is not endorsed or certified by TMDB.</p>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-tab="train" class="active"><span>🎯</span>Training</button>
+    <button data-tab="suggest"><span>✨</span>For You</button>
+    <button data-tab="pinned"><span>📌</span>Pinned</button>
+    <button data-tab="ratings"><span>⭐</span>Ratings</button>
+    <button data-tab="settings"><span>⚙️</span>Settings</button>
+  </nav>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2 id="sheet-title"></h2>
+      <p class="small" id="sheet-sub">How much did you like it?</p>
+      <div id="sheet-score" class="big-score">50</div>
+      <input id="sheet-slider" type="range" min="0" max="100" value="50">
+      <div class="slider-labels"><span>Hated it</span><span>Loved it</span></div>
+      <div class="sheet-buttons">
+        <button id="sheet-cancel" class="btn ghost">Cancel</button>
+        <button id="sheet-save" class="btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

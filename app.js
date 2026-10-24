@@ -1,0 +1,752 @@
+'use strict';
+
+// ---------- Saved state (lives only on this phone) ----------
+
+const STORE_KEY = 'wtw-state-v1';
+const REGION = 'US';
+const TRAIN_MOVIE_PAGES = 15; // ~300 top movies from the last 10 years before switching to current stuff
+const DEFAULT_SERVICES = /^(netflix|amazon prime video|disney plus|paramount plus|paramount\+|apple tv\+?|apple tv plus)$/i;
+
+const blankState = () => ({
+  apiKey: '',
+  mode: 'mine',          // 'mine' = only my services, 'all' = everything incl. rent/buy
+  services: [],          // TMDB provider ids
+  servicesPicked: false,
+  ratings: {},           // key -> {id, type, title, year, poster, score, features, at}
+  rejected: {},          // key -> {features, at}
+  pinned: {},            // key -> {id, type, title, year, poster, features, at}
+  names: {},             // feature -> readable name, for "because you like..."
+  train: { phase: 0, page: 1, done: false },
+});
+
+let state = load();
+
+function load() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    return Object.assign(blankState(), saved || {});
+  } catch {
+    return blankState();
+  }
+}
+function save() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  } catch {
+    toast('Could not save. Phone storage may be full.');
+  }
+}
+
+const keyOf = (type, id) => `${type}:${id}`;
+const handled = (k) => k in state.ratings || k in state.rejected || k in state.pinned;
+
+// ---------- TMDB ----------
+
+const API = 'https://api.themoviedb.org/3';
+const IMG = 'https://image.tmdb.org/t/p/';
+const detailCache = new Map();
+
+async function tmdb(path, params = {}) {
+  if (!state.apiKey) throw new Error('NO_KEY');
+  const url = new URL(API + path);
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') url.searchParams.set(k, v);
+  const headers = { accept: 'application/json' };
+  // The long "Read Access Token" goes in a header, the short API key goes in the URL.
+  if (state.apiKey.length > 40) headers.Authorization = 'Bearer ' + state.apiKey;
+  else url.searchParams.set('api_key', state.apiKey);
+  const res = await fetch(url, { headers });
+  if (res.status === 401) throw new Error('BAD_KEY');
+  if (!res.ok) throw new Error('HTTP_' + res.status);
+  return res.json();
+}
+
+// Turns a TMDB list item into our small title object.
+function fromListItem(it, type) {
+  type = it.media_type || type;
+  const date = it.release_date || it.first_air_date || '';
+  return {
+    id: it.id,
+    type,
+    title: it.title || it.name,
+    year: date.slice(0, 4),
+    poster: it.poster_path || '',
+    backdrop: it.backdrop_path || '',
+    overview: it.overview || '',
+    vote: it.vote_average || 0,
+    votes: it.vote_count || 0,
+    genreIds: it.genre_ids || [],
+  };
+}
+
+async function details(t) {
+  const k = keyOf(t.type, t.id);
+  if (detailCache.has(k)) return detailCache.get(k);
+  const p = tmdb(`/${t.type}/${t.id}`, { append_to_response: 'keywords,credits,watch/providers' })
+    .then((d) => {
+      const full = Object.assign({}, t, {
+        title: d.title || d.name || t.title,
+        overview: d.overview || t.overview,
+        vote: d.vote_average ?? t.vote,
+        runtime: d.runtime || (d.episode_run_time || [])[0] || 0,
+        seasons: d.number_of_seasons || 0,
+        genres: (d.genres || []).map((g) => g.name),
+        features: featuresOf(d, t.type),
+        where: whereOf(d['watch/providers']),
+      });
+      detailCache.set(k, full);
+      return full;
+    })
+    .catch((e) => {
+      detailCache.delete(k);
+      throw e;
+    });
+  detailCache.set(k, p);
+  return p;
+}
+
+// Where to watch in the US: streaming first, then rent/buy.
+function whereOf(wp) {
+  const r = (wp && wp.results && wp.results[REGION]) || {};
+  const out = [];
+  const seen = new Set();
+  for (const [kind, label] of [['flatrate', ''], ['free', 'Free'], ['ads', 'Free'], ['rent', 'Rent'], ['buy', 'Buy']]) {
+    for (const p of r[kind] || []) {
+      const tag = kind === 'flatrate' ? p.provider_name : null;
+      const id = kind + p.provider_id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id: p.provider_id, kind, name: tag || `${label}: ${p.provider_name}` });
+    }
+  }
+  return out;
+}
+const onMyServices = (t) => (t.where || []).some((w) => w.kind === 'flatrate' && state.services.includes(w.id));
+
+// ---------- Taste profile ----------
+// Each title becomes a bag of tags: genres, keywords (themes), top cast, director/creator, decade, movie vs show.
+// Ratings push those tags up or down; unseen titles are scored by the tags they share with what you liked.
+
+const TAG_WEIGHT = { g: 1.0, k: 0.7, c: 0.5, d: 0.8, y: 0.3, t: 0.3 };
+
+function featuresOf(d, type) {
+  const f = [];
+  const name = (tag, n) => { state.names[tag] = n; f.push(tag); };
+  for (const g of d.genres || []) name('g' + g.id, g.name);
+  const kw = (d.keywords && (d.keywords.keywords || d.keywords.results)) || [];
+  for (const k of kw.slice(0, 15)) name('k' + k.id, k.name);
+  const cast = (d.credits && d.credits.cast) || [];
+  for (const c of cast.slice(0, 5)) name('c' + c.id, c.name);
+  const crew = (d.credits && d.credits.crew) || [];
+  for (const c of crew.filter((c) => c.job === 'Director').slice(0, 2)) name('d' + c.id, c.name);
+  for (const c of (d.created_by || []).slice(0, 2)) name('d' + c.id, c.name);
+  const year = (d.release_date || d.first_air_date || '').slice(0, 4);
+  if (year) name('y' + year.slice(0, 3), year.slice(0, 3) + '0s');
+  name('t' + type, type === 'tv' ? 'TV shows' : 'movies');
+  return f;
+}
+
+let profileCache = null;
+function profile() {
+  if (profileCache) return profileCache;
+  const sum = {};
+  const cnt = {};
+  const add = (features, w) => {
+    for (const f of features || []) {
+      sum[f] = (sum[f] || 0) + w;
+      cnt[f] = (cnt[f] || 0) + 1;
+    }
+  };
+  for (const r of Object.values(state.ratings)) add(r.features, (r.score - 50) / 50);
+  for (const r of Object.values(state.rejected)) add(r.features, -0.25);
+  for (const r of Object.values(state.pinned)) add(r.features, 0.25);
+  const w = {};
+  // The +1 keeps one lucky rating from dominating a tag.
+  for (const f in sum) w[f] = sum[f] / (cnt[f] + 1);
+  profileCache = { w, n: Object.keys(state.ratings).length };
+  return profileCache;
+}
+const resetProfile = () => { profileCache = null; };
+
+// Predicted 0-100 score. With few ratings it leans on TMDB's crowd score; it trusts your taste more as you rate.
+function predict(t) {
+  const { w, n } = profile();
+  const byTag = {};
+  for (const f of t.features || []) (byTag[f[0]] ||= []).push(w[f] || 0);
+  let raw = 0;
+  let total = 0;
+  for (const [tag, vals] of Object.entries(byTag)) {
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    raw += TAG_WEIGHT[tag] * avg;
+    total += TAG_WEIGHT[tag];
+  }
+  const taste = total ? Math.tanh((raw / total) * 4) : 0;
+  const crowd = (t.vote || 6) * 10;
+  const trust = Math.min(1, n / 25) * 0.7;
+  return Math.round(Math.max(0, Math.min(100, (1 - trust) * crowd + trust * (50 + 50 * taste))));
+}
+
+// Top reasons, like "Because you like Sci-Fi and Denis Villeneuve".
+function why(t) {
+  const { w } = profile();
+  const good = (t.features || [])
+    .filter((f) => f[0] !== 't' && f[0] !== 'y' && (w[f] || 0) > 0.15)
+    .sort((a, b) => w[b] - w[a])
+    .slice(0, 2)
+    .map((f) => state.names[f]);
+  return good.length ? 'Because you like ' + good.join(' and ') : '';
+}
+
+// ---------- Decks ----------
+
+const tenYearsAgo = () => {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 10);
+  return d.toISOString().slice(0, 10);
+};
+function serviceFilter() {
+  if (state.mode !== 'mine' || !state.services.length) return {};
+  return { with_watch_providers: state.services.join('|'), watch_region: REGION, with_watch_monetization_types: 'flatrate' };
+}
+
+const decks = {
+  train: { queue: [], loading: false, empty: false },
+  suggest: { queue: [], loading: false, empty: false },
+};
+
+// Training: top movies of the last 10 years, then current popular movies and shows.
+async function moreTraining() {
+  const tr = state.train;
+  const out = [];
+  if (tr.phase === 0) {
+    const r = await tmdb('/discover/movie', Object.assign({
+      sort_by: 'vote_count.desc',
+      'primary_release_date.gte': tenYearsAgo(),
+      include_adult: false,
+      page: tr.page,
+    }, serviceFilter()));
+    out.push(...r.results.map((it) => fromListItem(it, 'movie')));
+    tr.page++;
+    if (tr.page > Math.min(TRAIN_MOVIE_PAGES, r.total_pages || 1)) { tr.phase = 1; tr.page = 1; }
+  } else {
+    const filter = serviceFilter();
+    const [m, s] = await Promise.all([
+      tmdb('/discover/movie', Object.assign({ sort_by: 'popularity.desc', 'vote_count.gte': 50, page: tr.page }, filter)),
+      tmdb('/discover/tv', Object.assign({ sort_by: 'popularity.desc', 'vote_count.gte': 50, page: tr.page }, filter)),
+    ]);
+    const a = m.results.map((it) => fromListItem(it, 'movie'));
+    const b = s.results.map((it) => fromListItem(it, 'tv'));
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (b[i]) out.push(b[i]);
+      if (a[i]) out.push(a[i]);
+    }
+    tr.page++;
+    if (tr.page > 50) tr.done = true;
+  }
+  save();
+  return out;
+}
+
+// Suggestions: things similar to what you rated high, plus your best genres. Only unseen titles, best match first.
+let suggestRound = 0;
+async function moreSuggestions() {
+  const liked = Object.values(state.ratings).filter((r) => r.score >= 70).sort((a, b) => b.score - a.score);
+  const page = suggestRound + 1;
+  const jobs = [];
+  for (const r of liked.slice(0, 10)) {
+    jobs.push(tmdb(`/${r.type}/${r.id}/recommendations`, { page }).then((x) => x.results.map((it) => fromListItem(it, r.type))));
+  }
+  const { w } = profile();
+  const topGenres = Object.keys(w).filter((f) => f[0] === 'g' && w[f] > 0).sort((a, b) => w[b] - w[a]).slice(0, 3).map((f) => f.slice(1));
+  for (const type of ['movie', 'tv']) {
+    jobs.push(tmdb(`/discover/${type}`, Object.assign({
+      sort_by: 'vote_average.desc',
+      'vote_count.gte': 300,
+      with_genres: topGenres.join('|'),
+      page,
+    }, serviceFilter())).then((x) => x.results.map((it) => fromListItem(it, type))));
+  }
+  suggestRound++;
+  const lists = await Promise.allSettled(jobs);
+  const seen = new Set();
+  const pool = [];
+  for (const l of lists) {
+    if (l.status !== 'fulfilled') continue;
+    for (const t of l.value) {
+      const k = keyOf(t.type, t.id);
+      if (seen.has(k) || handled(k) || !t.poster) continue;
+      seen.add(k);
+      pool.push(t);
+    }
+  }
+  const full = await mapLimit(pool, 6, (t) => details(t).catch(() => null));
+  return full
+    .filter((t) => t && (state.mode === 'all' || !state.services.length || onMyServices(t)))
+    .map((t) => Object.assign(t, { score: predict(t) }))
+    .sort((a, b) => b.score - a.score);
+}
+
+async function mapLimit(items, n, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: n }, async () => {
+    while (i < items.length) {
+      const j = i++;
+      out[j] = await fn(items[j]);
+    }
+  }));
+  return out;
+}
+
+async function fillDeck(name) {
+  const d = decks[name];
+  if (d.loading || d.queue.length >= 5 || d.empty) return;
+  d.loading = true;
+  try {
+    for (let tries = 0; tries < 6 && d.queue.length < 5; tries++) {
+      if (name === 'train' && state.train.done) break;
+      const more = name === 'train' ? await moreTraining() : await moreSuggestions();
+      const inQueue = new Set(d.queue.map((t) => keyOf(t.type, t.id)));
+      d.queue.push(...more.filter((t) => !handled(keyOf(t.type, t.id)) && !inQueue.has(keyOf(t.type, t.id))));
+      if (name === 'suggest' && (suggestRound > 5 || !more.length)) break;
+    }
+    if (!d.queue.length) d.empty = true;
+  } catch (e) {
+    showDeckError(e);
+  } finally {
+    d.loading = false;
+  }
+  if (currentTab === name) renderDeck();
+}
+
+function resetDecks() {
+  decks.train = { queue: [], loading: false, empty: false };
+  decks.suggest = { queue: [], loading: false, empty: false };
+  suggestRound = 0;
+}
+
+// ---------- Swipe cards ----------
+
+const $ = (s) => document.querySelector(s);
+const deckEl = $('#deck');
+let currentTab = 'train';
+let topCard = null;
+
+function renderDeck() {
+  const d = decks[currentTab];
+  if (!d) return;
+  deckEl.innerHTML = '';
+  topCard = null;
+  $('#deck-hint').textContent = currentTab === 'train'
+    ? 'Right = seen it · Left = not interested · Up = pin'
+    : 'Only stuff you haven’t seen, best match first';
+
+  if (!state.apiKey) return emptyMsg('Add your free TMDB key in <b>Settings</b> to start.');
+  if (currentTab === 'suggest' && Object.keys(state.ratings).length < 3) {
+    return emptyMsg('Rate at least 3 things in <b>Training</b> first, so I can learn your taste.');
+  }
+  if (!d.queue.length) {
+    if (d.empty) return emptyMsg(currentTab === 'train' ? 'You went through everything! Try <b>Everything</b> mode, or search in Ratings.' : 'No more matches right now. Rate more in Training, or try <b>Everything</b> mode.');
+    emptyMsg('Loading…');
+    fillDeck(currentTab);
+    return;
+  }
+  const [first, second] = d.queue;
+  if (second) deckEl.appendChild(makeCard(second, true));
+  topCard = makeCard(first, false);
+  deckEl.appendChild(topCard);
+  if (d.queue.length < 4) fillDeck(currentTab);
+  // Get details for the next card early, so it shows up instantly.
+  if (second) details(second).catch(() => {});
+}
+
+function emptyMsg(html) {
+  deckEl.innerHTML = `<div class="empty"><p>${html}</p></div>`;
+}
+function showDeckError(e) {
+  const msg = e.message === 'BAD_KEY' ? 'That TMDB key didn’t work. Check it in <b>Settings</b>.'
+    : e.message === 'NO_KEY' ? 'Add your free TMDB key in <b>Settings</b> to start.'
+    : 'Couldn’t reach TMDB. Check your internet and try again.';
+  if (currentTab === 'train' || currentTab === 'suggest') emptyMsg(msg);
+}
+
+function esc(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function makeCard(t, behind) {
+  const el = document.createElement('div');
+  el.className = 'card' + (behind ? ' behind' : '');
+  if (t.poster) el.style.backgroundImage = `url(${IMG}w780${t.poster})`;
+  else el.innerHTML = '<div class="no-poster">🎬</div>';
+  el.insertAdjacentHTML('beforeend', `
+    <div class="shade"></div>
+    <div class="stamp yes">Seen</div><div class="stamp no">Nope</div><div class="stamp pin">Pin</div>
+    <div class="info">
+      <div class="match-slot"></div>
+      <h2>${esc(t.title)}</h2>
+      <div class="meta">${t.type === 'tv' ? 'TV show' : 'Movie'}${t.year ? ' · ' + t.year : ''}<span class="extra"></span></div>
+      <p class="overview">${esc(t.overview)}</p>
+      <div class="why"></div>
+      <div class="where"></div>
+    </div>`);
+  if (!behind) {
+    attachSwipe(el, t);
+    details(t).then((full) => fillCard(el, full)).catch(() => {});
+  }
+  return el;
+}
+
+function fillCard(el, t) {
+  if (!el.isConnected) return;
+  const score = predict(t);
+  el.querySelector('.match-slot').innerHTML = `<span class="match${score < 60 ? ' low' : ''}">You'll like it: ${score}</span>`;
+  const bits = [];
+  if (t.genres && t.genres.length) bits.push(t.genres.slice(0, 3).join(', '));
+  if (t.type === 'movie' && t.runtime) bits.push(t.runtime + ' min');
+  if (t.type === 'tv' && t.seasons) bits.push(t.seasons + (t.seasons === 1 ? ' season' : ' seasons'));
+  el.querySelector('.extra').textContent = bits.length ? ' · ' + bits.join(' · ') : '';
+  el.querySelector('.why').textContent = why(t);
+  const where = t.where || [];
+  const mine = where.filter((w) => w.kind === 'flatrate' && state.services.includes(w.id));
+  const rest = where.filter((w) => !mine.includes(w)).slice(0, 4);
+  el.querySelector('.where').innerHTML = where.length
+    ? mine.map((w) => `<span class="mine">✓ ${esc(w.name)}</span>`).join('') + rest.map((w) => `<span>${esc(w.name)}</span>`).join('')
+    : '<span>Not streaming in the US right now</span>';
+}
+
+function attachSwipe(el, t) {
+  let sx = 0, sy = 0, dx = 0, dy = 0, dragging = false, moved = false;
+  const stamps = { yes: el.querySelector('.stamp.yes'), no: el.querySelector('.stamp.no'), pin: el.querySelector('.stamp.pin') };
+
+  el.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    moved = false;
+    sx = e.clientX;
+    sy = e.clientY;
+    dx = dy = 0;
+    el.setPointerCapture(e.pointerId);
+    el.style.transition = 'none';
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    dx = e.clientX - sx;
+    dy = e.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+    el.style.transform = `translate(${dx}px, ${dy}px) rotate(${dx / 18}deg)`;
+    const up = -dy > Math.abs(dx);
+    stamps.yes.style.opacity = !up && dx > 0 ? Math.min(1, dx / 100) : 0;
+    stamps.no.style.opacity = !up && dx < 0 ? Math.min(1, -dx / 100) : 0;
+    stamps.pin.style.opacity = up ? Math.min(1, -dy / 100) : 0;
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    const w = el.offsetWidth;
+    if (dx > w * 0.28) return act('right', t, el);
+    if (dx < -w * 0.28) return act('left', t, el);
+    if (-dy > el.offsetHeight * 0.2 && -dy > Math.abs(dx)) return act('up', t, el);
+    el.style.transition = 'transform .25s';
+    el.style.transform = '';
+    Object.values(stamps).forEach((s) => (s.style.opacity = 0));
+    // A tap with no drag opens the full description.
+    if (!moved) el.classList.toggle('open');
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+}
+
+function flyAway(el, dir) {
+  const x = dir === 'right' ? 1.5 : dir === 'left' ? -1.5 : 0;
+  const y = dir === 'up' ? -1.5 : 0;
+  el.style.transition = 'transform .3s ease-in';
+  el.style.transform = `translate(${x * innerWidth}px, ${y * innerHeight}px) rotate(${x * 20}deg)`;
+}
+
+let lastAction = null;
+
+async function act(dir, t, el) {
+  if (el) flyAway(el, dir);
+  let full;
+  try { full = await details(t); } catch { full = t; }
+  const k = keyOf(t.type, t.id);
+  const entry = { id: t.id, type: t.type, title: full.title, year: t.year, poster: t.poster, features: full.features || [], at: Date.now() };
+
+  if (dir === 'right') {
+    const score = await askRating(full.title, state.ratings[k] && state.ratings[k].score);
+    if (score === null) {
+      // Cancelled: put the card back.
+      renderDeck();
+      return;
+    }
+    removePinned(k);
+    state.ratings[k] = Object.assign(entry, { score });
+    delete state.rejected[k];
+  } else if (dir === 'left') {
+    state.rejected[k] = { features: entry.features, at: entry.at, title: entry.title };
+  } else {
+    state.pinned[k] = entry;
+  }
+  lastAction = { k, dir, tab: currentTab, item: t };
+  $('#undo').hidden = false;
+  resetProfile();
+  save();
+  dropFromQueues(k);
+  if (dir === 'up') toast('Pinned to your list');
+  renderDeck();
+}
+
+function dropFromQueues(k) {
+  for (const d of Object.values(decks)) d.queue = d.queue.filter((t) => keyOf(t.type, t.id) !== k);
+}
+function removePinned(k) { delete state.pinned[k]; }
+
+$('#undo').addEventListener('click', () => {
+  if (!lastAction) return;
+  const { k, dir, tab, item } = lastAction;
+  if (dir === 'right') delete state.ratings[k];
+  if (dir === 'left') delete state.rejected[k];
+  if (dir === 'up') delete state.pinned[k];
+  decks[tab].queue.unshift(item);
+  lastAction = null;
+  $('#undo').hidden = true;
+  resetProfile();
+  save();
+  render();
+});
+
+document.querySelectorAll('.deck-buttons button').forEach((b) =>
+  b.addEventListener('click', () => {
+    const t = decks[currentTab].queue[0];
+    if (t && topCard) act(b.dataset.act, t, topCard);
+  }));
+
+// ---------- Rating sheet ----------
+
+function askRating(title, current) {
+  return new Promise((resolve) => {
+    const sheet = $('#sheet');
+    const slider = $('#sheet-slider');
+    const score = $('#sheet-score');
+    $('#sheet-title').textContent = title;
+    slider.value = current ?? 50;
+    score.textContent = slider.value;
+    slider.oninput = () => (score.textContent = slider.value);
+    sheet.hidden = false;
+    const done = (v) => {
+      sheet.hidden = true;
+      $('#sheet-save').onclick = $('#sheet-cancel').onclick = sheet.onclick = null;
+      resolve(v);
+    };
+    $('#sheet-save').onclick = () => done(Number(slider.value));
+    $('#sheet-cancel').onclick = () => done(null);
+    sheet.onclick = (e) => { if (e.target === sheet) done(null); };
+  });
+}
+
+// ---------- Lists: pinned, ratings, search ----------
+
+function row(item, right) {
+  const img = item.poster ? `<img src="${IMG}w154${item.poster}" alt="" loading="lazy">` : '<div class="ph"></div>';
+  return `<li data-k="${keyOf(item.type, item.id)}">${img}
+    <div class="grow"><div class="name">${esc(item.title)}</div>
+    <div class="sub">${item.type === 'tv' ? 'TV show' : 'Movie'}${item.year ? ' · ' + item.year : ''}</div></div>${right}</li>`;
+}
+
+function renderPinned() {
+  const items = Object.values(state.pinned).sort((a, b) => b.at - a.at);
+  $('#pinned-list').innerHTML = items.length
+    ? items.map((p) => row(p, `<button class="mini" data-do="rate">Seen it</button><button class="mini" data-do="unpin">✕</button>`)).join('')
+    : '<li class="sub">Swipe up on a card to pin it here.</li>';
+}
+
+$('#pinned-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const k = btn.closest('li').dataset.k;
+  const p = state.pinned[k];
+  if (btn.dataset.do === 'unpin') {
+    delete state.pinned[k];
+  } else {
+    const score = await askRating(p.title);
+    if (score === null) return;
+    state.ratings[k] = Object.assign({}, p, { score, at: Date.now() });
+    delete state.pinned[k];
+  }
+  resetProfile();
+  save();
+  renderPinned();
+});
+
+function renderRatings() {
+  const items = Object.values(state.ratings).sort((a, b) => b.score - a.score);
+  $('#ratings-head').textContent = items.length ? `Rated: ${items.length}` : 'Nothing rated yet. Swipe in Training, or search above.';
+  $('#ratings-list').innerHTML = items.map((r) => row(r, `<div class="score">${r.score}</div>`)).join('');
+}
+
+$('#ratings-list').addEventListener('click', async (e) => {
+  const li = e.target.closest('li');
+  if (!li) return;
+  const r = state.ratings[li.dataset.k];
+  const score = await askRating(r.title, r.score);
+  if (score === null) return;
+  r.score = score;
+  resetProfile();
+  save();
+  renderRatings();
+});
+
+let searchTimer;
+const searchResults = new Map();
+$('#search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (!q) { $('#search-results').innerHTML = ''; return; }
+  searchTimer = setTimeout(async () => {
+    try {
+      const r = await tmdb('/search/multi', { query: q, include_adult: false });
+      const items = r.results.filter((it) => it.media_type === 'movie' || it.media_type === 'tv').slice(0, 8).map((it) => fromListItem(it));
+      searchResults.clear();
+      items.forEach((t) => searchResults.set(keyOf(t.type, t.id), t));
+      $('#search-results').innerHTML = items.map((t) => {
+        const r = state.ratings[keyOf(t.type, t.id)];
+        return row(t, r ? `<div class="score">${r.score}</div>` : '<button class="mini">Rate</button>');
+      }).join('') || '<li class="sub">No matches.</li>';
+    } catch (err) {
+      $('#search-results').innerHTML = `<li class="sub">${err.message === 'NO_KEY' ? 'Add your TMDB key in Settings first.' : 'Search failed. Try again.'}</li>`;
+    }
+  }, 350);
+});
+
+$('#search-results').addEventListener('click', async (e) => {
+  const li = e.target.closest('li[data-k]');
+  if (!li) return;
+  const t = searchResults.get(li.dataset.k);
+  await act('right', t, null);
+  $('#search').value = '';
+  $('#search-results').innerHTML = '';
+  renderRatings();
+});
+
+// ---------- Settings ----------
+
+async function renderSettings() {
+  $('#api-key').value = state.apiKey;
+  const box = $('#services');
+  if (!state.apiKey) { box.innerHTML = '<p class="small">Add your key first.</p>'; return; }
+  try {
+    const r = await tmdb('/watch/providers/movie', { watch_region: REGION });
+    const list = r.results.sort((a, b) => (a.display_priorities?.[REGION] ?? a.display_priority) - (b.display_priorities?.[REGION] ?? b.display_priority)).slice(0, 40);
+    if (!state.servicesPicked) {
+      state.services = list.filter((p) => DEFAULT_SERVICES.test(p.provider_name.trim())).map((p) => p.provider_id);
+      state.servicesPicked = true;
+      save();
+    }
+    box.innerHTML = list.map((p) => `<label><input type="checkbox" value="${p.provider_id}" ${state.services.includes(p.provider_id) ? 'checked' : ''}>
+      <img src="${IMG}w92${p.logo_path}" alt="">${esc(p.provider_name)}</label>`).join('');
+  } catch (e) {
+    box.innerHTML = `<p class="small">${e.message === 'BAD_KEY' ? 'That key didn’t work.' : 'Couldn’t load services. Check your internet.'}</p>`;
+  }
+}
+
+$('#services').addEventListener('change', () => {
+  state.services = [...document.querySelectorAll('#services input:checked')].map((i) => Number(i.value));
+  save();
+  resetDecks();
+});
+
+$('#save-key').addEventListener('click', async () => {
+  state.apiKey = $('#api-key').value.trim();
+  save();
+  resetDecks();
+  $('#key-status').textContent = 'Checking…';
+  try {
+    await tmdb('/configuration');
+    $('#key-status').textContent = '✓ Key works. Go to Training to start swiping!';
+  } catch (e) {
+    $('#key-status').textContent = e.message === 'BAD_KEY' ? '✕ That key didn’t work. Copy it again.' : 'Saved, but couldn’t check it (no internet?).';
+  }
+  renderSettings();
+});
+
+$('#export').addEventListener('click', () => {
+  const data = Object.assign({}, state, { apiKey: '' });
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `what-to-watch-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+
+$('#import').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data.ratings) throw new Error('not a backup');
+    state = Object.assign(blankState(), data, { apiKey: state.apiKey });
+    save();
+    resetProfile();
+    resetDecks();
+    toast(`Loaded ${Object.keys(state.ratings).length} ratings`);
+  } catch {
+    toast('That file isn’t a backup from this app.');
+  }
+  e.target.value = '';
+});
+
+// ---------- Mode toggle, tabs, misc ----------
+
+function renderToggle() {
+  document.querySelectorAll('#mode-toggle button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode));
+}
+document.querySelectorAll('#mode-toggle button').forEach((b) =>
+  b.addEventListener('click', () => {
+    if (state.mode === b.dataset.mode) return;
+    state.mode = b.dataset.mode;
+    save();
+    resetDecks();
+    renderToggle();
+    render();
+  }));
+
+const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', ratings: 'My Ratings', settings: 'Settings' };
+
+function render() {
+  $('#title').textContent = TITLES[currentTab];
+  const deckTab = currentTab === 'train' || currentTab === 'suggest';
+  $('#mode-toggle').hidden = !deckTab;
+  $('#undo').hidden = !deckTab || !lastAction;
+  $('#view-deck').hidden = !deckTab;
+  $('#view-pinned').hidden = currentTab !== 'pinned';
+  $('#view-ratings').hidden = currentTab !== 'ratings';
+  $('#view-settings').hidden = currentTab !== 'settings';
+  if (deckTab) renderDeck();
+  if (currentTab === 'pinned') renderPinned();
+  if (currentTab === 'ratings') renderRatings();
+  if (currentTab === 'settings') renderSettings();
+}
+
+document.querySelectorAll('.tabs button').forEach((b) =>
+  b.addEventListener('click', () => {
+    currentTab = b.dataset.tab;
+    document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    // Suggestions are rebuilt each visit so they reflect your newest ratings.
+    if (currentTab === 'suggest' && !decks.suggest.loading) decks.suggest = { queue: [], loading: false, empty: false }, suggestRound = 0;
+    render();
+  }));
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 2200);
+}
+
+if (!state.apiKey) currentTab = 'settings', document.querySelector('.tabs button[data-tab="settings"]').click();
+renderToggle();
+render();
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
