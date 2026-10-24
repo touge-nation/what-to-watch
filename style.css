@@ -350,3 +350,29 @@ main { flex: 1; overflow: hidden; position: relative; }
 .row-actions { display: flex; gap: 8px; margin-top: 12px; }
 .row-actions .mini { flex: 1; }
 .empty-row { padding: 30px 10px !important; text-align: center; display: block !important; border: 0 !important; }
+
+/* Profile */
+.bio p { margin: 0; line-height: 1.55; }
+.bio b { color: var(--accent); }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.tile { background: var(--panel); border-radius: 14px; padding: 12px 8px; text-align: center; }
+.tile-n { font-size: 24px; font-weight: 800; }
+.tile-l { font-size: 12px; color: var(--muted); }
+.spider { width: 100%; height: auto; display: block; overflow: visible; }
+.sp-grid { fill: none; stroke: var(--muted); stroke-opacity: .3; stroke-width: 1; }
+.sp-shape { fill: rgba(139, 108, 255, .28); stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.sp-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.sp-hit { fill: transparent; cursor: pointer; }
+.sp-label { fill: var(--text); font-size: 17px; font-weight: 600; dominant-baseline: middle; }
+.sp-val { fill: var(--muted); font-weight: 400; font-size: 15px; }
+.bars { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 38% 1fr 30px; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
+.bar-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-track { height: 10px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.bar-val { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.hist { display: flex; align-items: flex-end; gap: 2px; height: 140px; padding-top: 16px; }
+.hist-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; cursor: pointer; position: relative; }
+.hist-bar { width: 100%; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 0; }
+.hist-n { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.hist-x { font-size: 10px; color: var(--muted); margin-top: 4px; }

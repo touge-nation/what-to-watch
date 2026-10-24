@@ -13,7 +13,8 @@ const blankState = () => ({
   services: [],          // TMDB provider ids
   servicesPicked: false,
   ratings: {},           // key -> {id, type, title, year, poster, score, features, at}
-  rejected: {},          // key -> {features, at}
+  rejected: {},          // key -> {features, at}: removed from For You, counts as a small "not for me"
+  unseen: {},            // key -> at: swiped left in Training, "haven't seen it", no effect on taste
   pinned: {},            // key -> {id, type, title, year, poster, features, at}
   names: {},             // feature -> readable name, for "because you like..."
   train: { phase: 0, page: 1, done: false },
@@ -21,6 +22,15 @@ const blankState = () => ({
 });
 
 let state = load();
+
+// Older versions treated a Training left swipe as "not interested". It now means "haven't seen it".
+function migrate() {
+  if (state.unseenMigrated) return;
+  for (const k in state.rejected) state.unseen[k] = state.rejected[k].at || Date.now();
+  state.rejected = {};
+  state.unseenMigrated = true;
+}
+migrate();
 
 function load() {
   try {
@@ -42,6 +52,8 @@ function save() {
 
 const keyOf = (type, id) => `${type}:${id}`;
 const handled = (k) => k in state.ratings || k in state.rejected || k in state.pinned;
+// Training also skips what you said you haven't seen; For You still suggests those.
+const handledTrain = (k) => handled(k) || k in state.unseen;
 
 // ---------- TMDB ----------
 
@@ -317,7 +329,8 @@ async function fillDeck(name) {
       if (name === 'train' && state.train.done) break;
       const more = name === 'train' ? await moreTraining() : await moreSuggestions();
       const inQueue = new Set(d.queue.map((t) => keyOf(t.type, t.id)));
-      d.queue.push(...more.filter((t) => !handled(keyOf(t.type, t.id)) && !inQueue.has(keyOf(t.type, t.id))));
+      const done = name === 'train' ? handledTrain : handled;
+      d.queue.push(...more.filter((t) => !done(keyOf(t.type, t.id)) && !inQueue.has(keyOf(t.type, t.id))));
       if (name === 'suggest') d.queue.sort((a, b) => b.score - a.score);
       if (name === 'suggest' && (suggestRound > 5 || !more.length)) break;
     }
@@ -350,7 +363,7 @@ function renderDeck() {
   deckEl.innerHTML = '';
   topCard = null;
   $('#deck-hint').textContent = currentTab === 'train'
-    ? 'Right = seen it · Left = not interested · Up = pin'
+    ? 'Right = seen it · Left = haven\u2019t seen · Up = pin'
     : 'Only stuff you haven’t seen, best match first';
 
   if (!state.apiKey) return emptyMsg('Add your free TMDB key in <b>Settings</b> to start.');
@@ -394,7 +407,7 @@ function makeCard(t, behind) {
   else el.innerHTML = '<div class="no-poster">🎬</div>';
   el.insertAdjacentHTML('beforeend', `
     <div class="shade"></div>
-    <div class="stamp yes">Seen</div><div class="stamp no">Nope</div><div class="stamp pin">Pin</div>
+    <div class="stamp yes">Seen</div><div class="stamp no">Not seen</div><div class="stamp pin">Pin</div>
     <div class="info">
       <div class="match-slot"></div>
       <h2>${esc(t.title)}</h2>
@@ -495,6 +508,9 @@ async function act(dir, t, el) {
     removePinned(k);
     state.ratings[k] = Object.assign(entry, { score });
     delete state.rejected[k];
+    delete state.unseen[k];
+  } else if (dir === 'left' && currentTab === 'train') {
+    state.unseen[k] = entry.at;
   } else if (dir === 'left') {
     state.rejected[k] = { features: entry.features, at: entry.at, title: entry.title };
   } else {
@@ -518,7 +534,7 @@ $('#undo').addEventListener('click', () => {
   if (!lastAction) return;
   const { k, dir, tab, item } = lastAction;
   if (dir === 'right') delete state.ratings[k];
-  if (dir === 'left') delete state.rejected[k];
+  if (dir === 'left') delete state.rejected[k], delete state.unseen[k];
   if (dir === 'up') delete state.pinned[k];
   decks[tab].queue.unshift(item);
   lastAction = null;
@@ -849,7 +865,7 @@ document.querySelectorAll('#mode-toggle button').forEach((b) =>
     render();
   }));
 
-const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', ratings: 'My Ratings', settings: 'Settings' };
+const TITLES = { train: 'Training', suggest: 'For You', pinned: 'Pinned', ratings: 'My Ratings', profile: 'Profile', settings: 'Settings' };
 
 function render() {
   $('#title').textContent = TITLES[currentTab];
@@ -861,20 +877,25 @@ function render() {
   $('#view-pinned').hidden = currentTab !== 'pinned';
   $('#view-ratings').hidden = currentTab !== 'ratings';
   $('#view-settings').hidden = currentTab !== 'settings';
+  $('#view-profile').hidden = currentTab !== 'profile';
+  $('#open-settings').hidden = currentTab !== 'profile';
   if (deckTab) renderDeck();
   if (currentTab === 'pinned') renderPinned();
   if (currentTab === 'ratings') renderRatings();
   if (currentTab === 'settings') renderSettings(), renderAccount();
+  if (currentTab === 'profile') renderProfile();
 }
 
-document.querySelectorAll('.tabs button').forEach((b) =>
-  b.addEventListener('click', () => {
-    currentTab = b.dataset.tab;
-    document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
-    // Suggestions are rebuilt each visit so they reflect your newest ratings.
-    if (currentTab === 'suggest' && !decks.suggest.loading) decks.suggest = { queue: [], loading: false, empty: false }, suggestRound = 0;
-    render();
-  }));
+// Settings has no tab of its own; it opens from Profile.
+function goTab(name) {
+  currentTab = name;
+  const lit = name === 'settings' ? 'profile' : name;
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x.dataset.tab === lit));
+  // Suggestions are rebuilt each visit so they reflect your newest ratings.
+  if (name === 'suggest' && !decks.suggest.loading) decks.suggest = { queue: [], loading: false, empty: false }, suggestRound = 0;
+  render();
+}
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => goTab(b.dataset.tab)));
 
 let toastTimer;
 function toast(msg) {
@@ -903,6 +924,7 @@ async function syncDown() {
     const row = await Cloud.pull();
     if (row && row.data && (row.data.updatedAt || 0) >= (state.updatedAt || 0)) {
       state = Object.assign(blankState(), row.data);
+      migrate();
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {}
       resetProfile();
       resetDecks();
@@ -966,7 +988,7 @@ function start() {
   renderAccount();
   renderToggle();
   if (!started && !state.apiKey) {
-    document.querySelector('.tabs button[data-tab="settings"]').click();
+    goTab('settings');
   } else {
     render();
   }

@@ -15,6 +15,7 @@
     <h1 id="title">Training</h1>
     <div class="top-actions">
       <button id="undo" class="chip" hidden>Undo</button>
+      <button id="open-settings" class="chip" hidden>⚙️ Settings</button>
       <div class="toggle" id="mode-toggle" role="group" aria-label="What to show">
         <button data-mode="mine">My services</button>
         <button data-mode="all">Everything</button>
@@ -27,7 +28,7 @@
     <section id="view-deck" class="view">
       <div id="deck" class="deck"></div>
       <div class="deck-buttons">
-        <button class="round no" data-act="left" aria-label="Not interested">✕</button>
+        <button class="round no" data-act="left" aria-label="Haven't seen it">✕</button>
         <button class="round pin" data-act="up" aria-label="Pin it">📌</button>
         <button class="round yes" data-act="right" aria-label="Seen it">✓</button>
       </div>
@@ -48,6 +49,10 @@
       <ul id="search-results" class="list"></ul>
       <h2 id="ratings-head" class="list-head"></h2>
       <ul id="ratings-list" class="list"></ul>
+    </section>
+
+    <section id="view-profile" class="view" hidden>
+      <div id="profile-body"></div>
     </section>
 
     <section id="view-settings" class="view" hidden>
@@ -82,7 +87,7 @@
     <button data-tab="suggest"><span>✨</span>For You</button>
     <button data-tab="pinned"><span>📌</span>Pinned</button>
     <button data-tab="ratings"><span>⭐</span>Ratings</button>
-    <button data-tab="settings"><span>⚙️</span>Settings</button>
+    <button data-tab="profile"><span>📊</span>Profile</button>
   </nav>
 
   <div id="sheet" class="sheet" hidden>
@@ -117,5 +122,6 @@
   <script src="config.js"></script>
   <script src="cloud.js"></script>
   <script src="app.js"></script>
+  <script src="stats.js"></script>
 </body>
 </html>
