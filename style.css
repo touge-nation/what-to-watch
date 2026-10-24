@@ -410,3 +410,10 @@ main { flex: 1; min-height: 0; overflow: hidden; position: relative; }
 
 /* Stop swipes and taps from selecting text */
 .tabs, .deck-buttons, .card, .srow, .list li { -webkit-user-select: none; user-select: none; }
+
+/* Search filter chips and genre presets */
+.chips { display: flex; gap: 6px; margin: 0 0 6px; flex: none; overflow-x: auto; }
+.chips .chip { flex: none; min-height: 34px; }
+.chip.on { background: var(--accent); color: #fff; }
+.list li.presets { display: flex; flex-wrap: wrap; gap: 8px; border: 0; }
+.chip.preset { min-height: 38px; padding: 8px 14px; font-size: 14px; }

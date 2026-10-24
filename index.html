@@ -23,6 +23,12 @@
     <!-- Training and Suggestions share the swipe deck -->
     <section id="view-deck" class="view">
       <input id="train-search" class="search" type="search" placeholder="🔍 Search title, genre, or theme" autocomplete="off">
+      <div id="ts-filters" class="chips" hidden>
+        <button class="chip" data-f="all">All</button>
+        <button class="chip" data-f="genre">Genres</button>
+        <button class="chip" data-f="theme">Themes</button>
+        <button class="chip" data-f="title">Titles</button>
+      </div>
       <ul id="train-results" class="list train-results" hidden></ul>
       <div id="deck" class="deck"></div>
       <div class="deck-buttons">

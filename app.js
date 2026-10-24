@@ -730,13 +730,49 @@ function setTrainSearch(on) {
   $('.deck-buttons').hidden = on;
   $('#deck-hint').hidden = on;
   tsList.hidden = !on;
+  $('#ts-filters').hidden = !on || !tsInput.value.trim();
 }
+
+// Filter chips: show all results, or only genres, themes or titles.
+let tsFilter = 'all';
+const SECTION_KINDS = { genre: 'Genres', theme: 'Themes', title: 'Titles' };
+document.querySelectorAll('#ts-filters button').forEach((b) => b.addEventListener('click', () => {
+  tsFilter = b.dataset.f;
+  renderFilterChips();
+  renderTrainResults();
+}));
+function renderFilterChips() {
+  document.querySelectorAll('#ts-filters button').forEach((b) => b.classList.toggle('on', b.dataset.f === tsFilter));
+}
+
+// With an empty search box, show genre presets to tap.
+async function showPresets() {
+  setTrainSearch(true);
+  tsList.innerHTML = '<li class="list-head">Pick a genre you like</li><li class="presets sub">Loading…</li>';
+  try {
+    const g = await allGenres();
+    if (tsInput.value.trim()) return;
+    const names = [...new Set([...g.movie, ...g.tv].map((x) => x.name))].sort();
+    tsList.innerHTML = '<li class="list-head">Pick a genre you like</li><li class="presets">'
+      + names.map((n) => `<button class="chip preset" data-g="${esc(n)}">${esc(n)}</button>`).join('') + '</li>'
+      + '<li class="sub small">Or type a title, or a theme like “heist” or “time travel”.</li>';
+  } catch {
+    tsList.innerHTML = '<li class="sub">Add your TMDB key in Settings first.</li>';
+  }
+}
+
+tsInput.addEventListener('focus', () => { if (!tsInput.value.trim()) showPresets(); });
+tsInput.addEventListener('blur', () => {
+  // Wait a moment so tapping a preset still works.
+  setTimeout(() => { if (!tsInput.value.trim() && document.activeElement !== tsInput) { setTrainSearch(false); renderDeck(); } }, 250);
+});
 
 tsInput.addEventListener('input', () => {
   clearTimeout(tsTimer);
   const q = tsInput.value.trim();
-  setTrainSearch(!!q);
-  if (!q) return renderDeck();
+  if (!q) return showPresets();
+  tsFilter = 'all';
+  setTrainSearch(true);
   tsTimer = setTimeout(() => runTrainSearch(q), 350);
 });
 
@@ -750,25 +786,34 @@ async function runTrainSearch(q) {
       tmdb('/search/keyword', { query: q }),
       allGenres(),
     ]);
-    const sections = [];
-    const tl = titles.results.filter((it) => it.media_type === 'movie' || it.media_type === 'tv').slice(0, 8).map((it) => fromListItem(it));
-    if (tl.length) sections.push(['Titles', tl]);
     const jobs = [];
+    // Closest genre first: exact name, then starts with, then contains ("action" -> "Action & Adventure" for TV).
+    const pickGenre = (list) => list.find((x) => x.name.toLowerCase() === ql)
+      || list.find((x) => x.name.toLowerCase().startsWith(ql))
+      || (ql.length >= 4 && list.find((x) => x.name.toLowerCase().includes(ql)));
     for (const type of ['movie', 'tv']) {
-      const gm = g[type].find((x) => x.name.toLowerCase().includes(ql));
+      const gm = pickGenre(g[type]);
       if (gm) {
         jobs.push(tmdb(`/discover/${type}`, { with_genres: gm.id, sort_by: 'vote_count.desc' })
-          .then((r) => [`Popular ${gm.name} ${type === 'tv' ? 'shows' : 'movies'}`, r.results.slice(0, 10).map((it) => fromListItem(it, type))]));
+          .then((r) => ['genre', `${gm.name} ${type === 'tv' ? 'shows' : 'movies'}`, r.results.slice(0, 12).map((it) => fromListItem(it, type))]));
       }
     }
     const kw = kws.results.find((k) => k.name.toLowerCase() === ql) || kws.results[0];
     if (kw) {
       jobs.push(Promise.all(['movie', 'tv'].map((type) => tmdb(`/discover/${type}`, { with_keywords: kw.id, sort_by: 'vote_count.desc' })))
-        .then(([m, t]) => [`About “${kw.name}”`, [...m.results.slice(0, 8).map((it) => fromListItem(it, 'movie')), ...t.results.slice(0, 4).map((it) => fromListItem(it, 'tv'))]]));
+        .then(([m, t]) => ['theme', `Theme: “${kw.name}”`, [...m.results.slice(0, 8).map((it) => fromListItem(it, 'movie')), ...t.results.slice(0, 4).map((it) => fromListItem(it, 'tv'))]]));
     }
-    for (const r of await Promise.allSettled(jobs)) if (r.status === 'fulfilled' && r.value[1].length) sections.push(r.value);
+    const sections = [];
+    for (const r of await Promise.allSettled(jobs)) if (r.status === 'fulfilled' && r.value[2].length) sections.push(r.value);
+    const tl = titles.results.filter((it) => it.media_type === 'movie' || it.media_type === 'tv').slice(0, 8).map((it) => fromListItem(it));
+    if (tl.length) sections.push(['title', `Titles with “${q}”`, tl]);
     if (seq !== tsSeq) return;
-    tsSections = sections;
+    // Keep any "More like" lists from this session on top.
+    tsSections = [...tsSections.filter(([kind]) => kind === 'more'), ...sections];
+    // A preset tap asks for genres only; typing starts on All.
+    if (tsFilter !== 'all' && !sections.some(([kind]) => kind === tsFilter)) tsFilter = 'all';
+    renderFilterChips();
+    setTrainSearch(true);
     renderTrainResults();
   } catch (e) {
     if (seq !== tsSeq) return;
@@ -776,10 +821,19 @@ async function runTrainSearch(q) {
   }
 }
 
+tsList.addEventListener('click', (e) => {
+  const p = e.target.closest('button.preset');
+  if (!p) return;
+  tsInput.value = p.dataset.g;
+  tsFilter = 'genre';
+  runTrainSearch(p.dataset.g);
+});
+
 function renderTrainResults() {
   tsItems.clear();
-  if (!tsSections.length) { tsList.innerHTML = '<li class="sub">No matches. Try a title, a genre like “horror”, or a theme like “heist”.</li>'; return; }
-  tsList.innerHTML = tsSections.map(([head, items]) => `<li class="list-head">${esc(head)}</li>` + items.map((t) => {
+  const shown = tsSections.filter(([kind]) => tsFilter === 'all' || kind === tsFilter);
+  if (!shown.length) { tsList.innerHTML = '<li class="sub">No matches. Try a title, a genre like “horror”, or a theme like “heist”.</li>'; return; }
+  tsList.innerHTML = shown.map(([, head, items]) => `<li class="list-head">${esc(head)}</li>` + items.map((t) => {
     const k = keyOf(t.type, t.id);
     tsItems.set(k, t);
     const r = state.ratings[k];
@@ -801,11 +855,11 @@ tsList.addEventListener('click', async (e) => {
   if (!btn && !(li.dataset.k in state.ratings)) return;
   await act(btn ? btn.dataset.do : 'right', t, null);
   const r = state.ratings[li.dataset.k];
-  if (r && r.score >= 60 && !tsSections.some(([h]) => h.endsWith(t.title))) {
+  if (r && r.score >= 60 && !tsSections.some(([kind, h]) => kind === 'more' && h.endsWith(t.title))) {
     try {
       const rec = await tmdb(`/${t.type}/${t.id}/recommendations`);
       const items = rec.results.slice(0, 10).map((it) => fromListItem(it, t.type));
-      if (items.length) tsSections.unshift([`More like ${t.title}`, items]);
+      if (items.length) tsSections.unshift(['more', `More like ${t.title}`, items]);
     } catch {}
   }
   renderTrainResults();
